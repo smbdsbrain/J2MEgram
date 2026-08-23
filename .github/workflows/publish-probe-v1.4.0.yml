@@ -91,7 +91,18 @@ jobs:
 
       - name: Emulator smoke test
         shell: pwsh
-        run: ./tools/smoke-emulator.ps1 -SkipBuild -ArtifactName $env:ARTIFACT_BASE
+        run: |
+          # smoke-emulator.ps1 selects the Probe harness from a probe* filename.
+          # Test an exact byte-for-byte alias of the versioned release JAR.
+          $smokeName = 'probe-v1.4.0-release'
+          $smokeJar = Join-Path $PWD "dist/$smokeName.jar"
+          Copy-Item -LiteralPath (Join-Path $PWD "dist/$env:ARTIFACT_BASE.jar") -Destination $smokeJar
+          try {
+            ./tools/smoke-emulator.ps1 -SkipBuild -ArtifactName $smokeName
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } finally {
+            Remove-Item -LiteralPath $smokeJar -Force -ErrorAction SilentlyContinue
+          }
 
       - name: Verify JAD and JAR metadata
         shell: pwsh
