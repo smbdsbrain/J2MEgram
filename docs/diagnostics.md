@@ -240,3 +240,13 @@ MIDP's `HttpConnection` has no timeout control, so an upload can block for as
 long as the runtime decides. Every send runs on a worker thread; doing it in a
 lcdui callback would freeze the display, and some AMS implementations treat that
 as a hung MIDlet and kill it - while it is being diagnosed.
+
+The `HTTP request-body` exception prefix is deliberately read as a stage, not a
+wire-level finding. `MidpHttpExecutor` assigns it before `openOutputStream()` and
+keeps it through `write`, `flush` and `close`. A lazy MIDP implementation may do
+its first DNS lookup or open the network bearer during one of those calls, so
+the prefix alone cannot distinguish an HTTP body limit from a missing Java
+access-point route. That distinction became concrete on the
+[Fly E190 Wi-Fi](hardware/fly-e190-wifi.md): every upload and raw-socket open
+failed until the handset's separate Java network profile was configured, after
+which the same build uploaded the complete suite successfully.
