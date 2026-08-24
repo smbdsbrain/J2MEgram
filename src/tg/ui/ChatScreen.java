@@ -100,6 +100,11 @@ public class ChatScreen extends Canvas
     private int revealedSpoilerCount;
     private ActivationListener activationListener;
     private ViewportListener viewportListener;
+    private final TouchGesture touch = new TouchGesture();
+    private TouchContextListener touchContextListener;
+    /** Uncommitted pixel part of a live pointer scroll. */
+    private int touchPaintOffsetY;
+    private boolean touchOnMessage;
 
     /**
      * Inclusive bounds of the laid-out slice of {@link #currentMessages}, which
@@ -225,6 +230,11 @@ public class ChatScreen extends Canvas
     public void setViewportListener(ViewportListener value)
     {
         viewportListener = value;
+    }
+
+    public void setTouchContextListener(TouchContextListener value)
+    {
+        touchContextListener = value;
     }
 
     public int focusedMessageId() { return focusedMessageId; }
@@ -779,16 +789,28 @@ public class ChatScreen extends Canvas
         UiChrome.header(g, theme, metrics, font, title, headerStatus);
         int visible = visibleLines();
 
-        int y = metrics.bodyTop;
+        int first = scroll.top();
+        int y = metrics.bodyTop + touchPaintOffsetY;
+        if (touchPaintOffsetY > 0 && first > 0)
+        {
+            first--;
+            y -= lineHeight;
+        }
         int paintedMessageId = 0;
         Message paintedMessage = null;
-        for (int i = 0; i < visible; i++)
+        int bodyClipX = g.getClipX();
+        int bodyClipY = g.getClipY();
+        int bodyClipWidth = g.getClipWidth();
+        int bodyClipHeight = g.getClipHeight();
+        g.clipRect(0, metrics.bodyTop, metrics.width, metrics.bodyHeight);
+        for (int i = 0; i < visible + 2; i++)
         {
-            int idx = scroll.top() + i;
+            int idx = first + i;
             if (idx >= lines.length)
             {
                 break;
             }
+            if (y >= metrics.bodyBottom) { break; }
             if (meta[idx])
             {
                 g.setFont(metaFont);
@@ -862,6 +884,7 @@ public class ChatScreen extends Canvas
             }
             y += lineHeight;
         }
+        g.setClip(bodyClipX, bodyClipY, bodyClipWidth, bodyClipHeight);
     }
 
     private String displayStatus()
@@ -910,11 +933,7 @@ public class ChatScreen extends Canvas
         }
         else if (action == Canvas.FIRE || keyCode == Canvas.KEY_NUM5)
         {
-            ActivationListener listener = activationListener;
-            if (listener != null && focusedMessageId != 0)
-            {
-                listener.onMessageActivated(focusedMessageId);
-            }
+            activateFocused();
         }
     }
 
@@ -923,15 +942,103 @@ public class ChatScreen extends Canvas
         keyPressed(keyCode);
     }
 
+    protected void pointerPressed(int x, int y)
+    {
+        touch.press(x, y);
+        touchPaintOffsetY = 0;
+        touchOnMessage = focusAt(y);
+    }
+
+    protected void pointerDragged(int x, int y)
+    {
+        if (!touch.drag(x, y)) { return; }
+        int delta = touch.deltaY();
+        if (delta == 0) { return; }
+        touchPaintOffsetY += delta;
+        int unit = Math.max(1, lineHeight);
+        int steps = touchPaintOffsetY / unit;
+        if (steps != 0)
+        {
+            touchPaintOffsetY -= steps * unit;
+            scrollTouch(-steps);
+        }
+        if ((scroll.top() == 0 && touchPaintOffsetY > 0)
+                || (scroll.top() == maxTop() && touchPaintOffsetY < 0))
+        {
+            touchPaintOffsetY = 0;
+        }
+        touch.repaintFrame(this, 0, metrics.bodyTop,
+                metrics.width, metrics.bodyHeight);
+    }
+
+    protected void pointerReleased(int x, int y)
+    {
+        if (touch.isPressed()) { pointerDragged(x, y); }
+        boolean dragged = touch.isDragging();
+        int result = touch.release(x, y);
+        if (dragged)
+        {
+            settleTouchScroll();
+            return;
+        }
+        if (!touchOnMessage || result == TouchGesture.NONE) { return; }
+        if (result == TouchGesture.LONG_PRESS)
+        {
+            TouchContextListener listener = touchContextListener;
+            if (listener != null) { listener.onTouchContextRequested(this); }
+        }
+        else { activateFocused(); }
+    }
+
+    private void settleTouchScroll()
+    {
+        int unit = Math.max(1, lineHeight);
+        if (touchPaintOffsetY <= -unit / 2) { scrollTouch(1); }
+        else if (touchPaintOffsetY >= unit / 2) { scrollTouch(-1); }
+        touchPaintOffsetY = 0;
+        repaint();
+        viewportChanged();
+    }
+
+    /** Invoke the same focused-message action as FIRE and a short tap. */
+    public void activateFocused()
+    {
+        ActivationListener listener = activationListener;
+        if (listener != null && focusedMessageId != 0)
+        {
+            listener.onMessageActivated(focusedMessageId);
+        }
+    }
+
+    private boolean focusAt(int y)
+    {
+        updateMetrics();
+        if (y < metrics.bodyTop || y >= metrics.bodyBottom) { return false; }
+        int line = scroll.top() + (y - metrics.bodyTop) / lineHeight;
+        if (line < 0 || line >= lineMessageIds.length) { return false; }
+        int id = lineMessageIds[line];
+        if (id == 0) { return false; }
+        focusedMessageId = id;
+        repaint();
+        viewportChanged();
+        return true;
+    }
+
     // ------------------------------------------------------------ internal
 
     private void scroll(int delta)
     {
+        scrollTouch(delta);
+        repaint();
+        viewportChanged();
+    }
+
+    /** Pointer path: update all state, defer paint and heavy listeners. */
+    private void scrollTouch(int delta)
+    {
         scroll.userScroll(delta, maxTop());
         settleFollowState();
         reflowIfNearWindowEdge();
-        repaint();
-        viewportChanged();
     }
 
     /**

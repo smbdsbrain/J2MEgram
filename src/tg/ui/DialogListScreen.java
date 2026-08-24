@@ -42,6 +42,11 @@ public class DialogListScreen extends Canvas
     private ActivationListener activationListener;
     private ViewportListener viewportListener;
     private AvatarCache avatarCache;
+    private final TouchGesture touch = new TouchGesture();
+    private TouchContextListener touchContextListener;
+    /** Uncommitted pixel part of a live pointer scroll. */
+    private int touchPaintOffsetY;
+    private boolean touchOnRow;
 
     public DialogListScreen(Theme theme)
     {
@@ -62,6 +67,11 @@ public class DialogListScreen extends Canvas
     public void setViewportListener(ViewportListener value)
     {
         viewportListener = value;
+    }
+
+    public void setTouchContextListener(TouchContextListener value)
+    {
+        touchContextListener = value;
     }
 
     public void setAvatarCache(AvatarCache value)
@@ -248,8 +258,14 @@ public class DialogListScreen extends Canvas
                 "Chats " + count, state);
 
         int visible = metrics.visibleRows();
-        ensureVisible();
-        int y = metrics.bodyTop;
+        if (!touch.isDragging()) { ensureVisible(); }
+        int first = top;
+        int y = metrics.bodyTop + touchPaintOffsetY;
+        if (touchPaintOffsetY > 0 && first > 0)
+        {
+            first--;
+            y -= metrics.rowHeight;
+        }
         if (dialogs.length == 0)
         {
             g.setColor(theme.secondaryText);
@@ -257,12 +273,22 @@ public class DialogListScreen extends Canvas
             g.drawString(emptyText, metrics.padding,
                     y + metrics.padding, Graphics.TOP | Graphics.LEFT);
         }
-        for (int row = 0; row < visible; row++)
+        int clipX = g.getClipX();
+        int clipY = g.getClipY();
+        int clipWidth = g.getClipWidth();
+        int clipHeight = g.getClipHeight();
+        g.clipRect(0, metrics.bodyTop, metrics.width, metrics.bodyHeight);
+        for (int row = 0; row < visible + 2; row++)
         {
-            int index = top + row;
+            int index = first + row;
             if (index >= dialogs.length) { break; }
+            if (y >= metrics.bodyBottom) { break; }
             Dialog dialog = dialogs[index];
-            if (dialog == null) { continue; }
+            if (dialog == null)
+            {
+                y += metrics.rowHeight;
+                continue;
+            }
             boolean focused = index == selected;
             if (focused)
             {
@@ -350,6 +376,7 @@ public class DialogListScreen extends Canvas
                     metrics.width - 1, y + metrics.rowHeight - 1);
             y += metrics.rowHeight;
         }
+        g.setClip(clipX, clipY, clipWidth, clipHeight);
     }
 
     protected void keyPressed(int keyCode)
@@ -369,16 +396,114 @@ public class DialogListScreen extends Canvas
         }
         else if (action == FIRE || keyCode == KEY_NUM5)
         {
-            ActivationListener listener = activationListener;
-            Peer peer = selectedPeer();
-            if (listener != null && peer != null)
-            {
-                listener.onDialogActivated(peer);
-            }
+            activateSelected();
         }
     }
 
     protected void keyRepeated(int keyCode) { keyPressed(keyCode); }
+
+    protected void pointerPressed(int x, int y)
+    {
+        touch.press(x, y);
+        touchPaintOffsetY = 0;
+        touchOnRow = selectAt(y);
+    }
+
+    protected void pointerDragged(int x, int y)
+    {
+        if (!touch.drag(x, y)) { return; }
+        int delta = touch.deltaY();
+        if (delta == 0) { return; }
+        touchPaintOffsetY += delta;
+        updateMetrics();
+        int unit = Math.max(1, metrics.rowHeight);
+        int visible = metrics.visibleRows();
+        int max = Math.max(0, dialogs.length - visible);
+        while (touchPaintOffsetY <= -unit && top < max)
+        {
+            top++;
+            touchPaintOffsetY += unit;
+        }
+        while (touchPaintOffsetY >= unit && top > 0)
+        {
+            top--;
+            touchPaintOffsetY -= unit;
+        }
+        if ((top == 0 && touchPaintOffsetY > 0)
+                || (top == max && touchPaintOffsetY < 0))
+        {
+            touchPaintOffsetY = 0;
+        }
+        touch.repaintFrame(this, 0, metrics.bodyTop,
+                metrics.width, metrics.bodyHeight);
+    }
+
+    protected void pointerReleased(int x, int y)
+    {
+        if (touch.isPressed()) { pointerDragged(x, y); }
+        boolean dragged = touch.isDragging();
+        int result = touch.release(x, y);
+        if (dragged)
+        {
+            settleTouchScroll();
+            return;
+        }
+        if (!touchOnRow || result == TouchGesture.NONE) { return; }
+        if (result == TouchGesture.LONG_PRESS)
+        {
+            TouchContextListener listener = touchContextListener;
+            if (listener != null) { listener.onTouchContextRequested(this); }
+        }
+        else { activateSelected(); }
+    }
+
+    private void settleTouchScroll()
+    {
+        updateMetrics();
+        int unit = Math.max(1, metrics.rowHeight);
+        int max = Math.max(0, dialogs.length - metrics.visibleRows());
+        if (touchPaintOffsetY <= -unit / 2 && top < max) { top++; }
+        else if (touchPaintOffsetY >= unit / 2 && top > 0) { top--; }
+        touchPaintOffsetY = 0;
+        clampSelectionToViewport();
+        repaint();
+        viewportChanged();
+    }
+
+    private void clampSelectionToViewport()
+    {
+        if (dialogs.length == 0) { selected = 0; return; }
+        int last = Math.min(dialogs.length - 1,
+                top + metrics.visibleRows() - 1);
+        if (selected < top) { selected = top; }
+        if (selected > last) { selected = last; }
+    }
+
+    private boolean selectAt(int y)
+    {
+        updateMetrics();
+        if (y < metrics.bodyTop || y >= metrics.bodyBottom) { return false; }
+        int index = top + (y - metrics.bodyTop) / metrics.rowHeight;
+        if (index < 0 || index >= dialogs.length || dialogs[index] == null)
+        {
+            return false;
+        }
+        selected = index;
+        ensureVisible();
+        repaint();
+        viewportChanged();
+        return true;
+    }
+
+    private void activateSelected()
+    {
+        ActivationListener listener = activationListener;
+        Peer peer = selectedPeer();
+        if (listener != null && peer != null)
+        {
+            listener.onDialogActivated(peer);
+        }
+    }
 
     private void move(int delta)
     {

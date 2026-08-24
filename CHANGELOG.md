@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.4.1
+
+### Added
+
+- Touchscreen navigation for every application Canvas used by the messenger.
+  A short tap repeats the focused `FIRE` action, a live pixel-tracked drag moves
+  lists/history or pans a photo while the finger is moving, and a long press
+  opens a native action list for the touched chat, topic, message, poll answer,
+  reaction or photo. D-pad/numeric handling is unchanged.
+
+### Changed
+
+- Live drag frames use non-blocking content-region repaint requests. MIDP can
+  coalesce them and paint the newest finger position instead of synchronously
+  rendering stale intermediate positions; chat viewport/paging callbacks stay
+  deferred until release.
+
+### Testing
+
+- Deterministic pointer tests cover tap/hold/drag classification, suppression
+  of activation after a swipe, live partial-pixel repaint before release,
+  Canvas hit testing, message activation, picker selection, text scrolling,
+  photo zoom and continued d-pad/FIRE behaviour.
+- Basic tap, hold and swipe navigation was exercised on a Fly E190 Wi-Fi.
+  Scrolling is functional there, though its vendor VM still renders live drags
+  noticeably slower and less smoothly than desired.
+
 ## 1.4.0
 
 ### Added

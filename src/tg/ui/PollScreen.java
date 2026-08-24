@@ -26,6 +26,11 @@ public class PollScreen extends Canvas
     private int top;
     private String status = "";
     private SelectionListener selectionListener;
+    private final TouchGesture touch = new TouchGesture();
+    private TouchContextListener touchContextListener;
+    /** Uncommitted pixel part of a live pointer scroll. */
+    private int touchPaintOffsetY;
+    private boolean touchOnOption;
 
     public PollScreen()
     {
@@ -50,6 +55,11 @@ public class PollScreen extends Canvas
     public void setSelectionListener(SelectionListener value)
     {
         selectionListener = value;
+    }
+
+    public void setTouchContextListener(TouchContextListener value)
+    {
+        touchContextListener = value;
     }
 
     /** Apply fresh server state, preserving an unsubmitted local selection. */
@@ -143,13 +153,28 @@ public class PollScreen extends Canvas
                 metrics.padding, y + metrics.padding,
                 Graphics.TOP | Graphics.LEFT);
         y += rowHeight;
+        int optionsTop = y;
 
         int visible = visibleRows();
-        ensureVisible(visible);
-        for (int row = 0; row < visible; row++)
+        if (!touch.isDragging()) { ensureVisible(visible); }
+        int first = top;
+        y += touchPaintOffsetY;
+        if (touchPaintOffsetY > 0 && first > 0)
         {
-            int index = top + row;
+            first--;
+            y -= rowHeight;
+        }
+        int clipX = g.getClipX();
+        int clipY = g.getClipY();
+        int clipWidth = g.getClipWidth();
+        int clipHeight = g.getClipHeight();
+        g.clipRect(0, optionsTop, metrics.width,
+                Math.max(1, metrics.bodyBottom - optionsTop));
+        for (int row = 0; row < visible + 2; row++)
+        {
+            int index = first + row;
             if (index >= selectedOptions.length) { break; }
+            if (y >= metrics.bodyBottom) { break; }
             boolean focused = index == selected;
             if (focused)
             {
@@ -168,6 +193,7 @@ public class PollScreen extends Canvas
                     x, y + metrics.padding, Graphics.TOP | Graphics.LEFT);
             y += rowHeight;
         }
+        g.setClip(clipX, clipY, clipWidth, clipHeight);
     }
 
     protected void sizeChanged(int width, int height)
@@ -187,6 +213,95 @@ public class PollScreen extends Canvas
     }
 
     protected void keyRepeated(int keyCode) { keyPressed(keyCode); }
+
+    protected void pointerPressed(int x, int y)
+    {
+        touch.press(x, y);
+        touchPaintOffsetY = 0;
+        touchOnOption = selectAt(y);
+    }
+
+    protected void pointerDragged(int x, int y)
+    {
+        if (!touch.drag(x, y)) { return; }
+        int delta = touch.deltaY();
+        if (delta == 0) { return; }
+        touchPaintOffsetY += delta;
+        int unit = rowHeight();
+        int visible = visibleRows();
+        int max = Math.max(0, selectedOptions.length - visible);
+        while (touchPaintOffsetY <= -unit && top < max)
+        {
+            top++;
+            touchPaintOffsetY += unit;
+        }
+        while (touchPaintOffsetY >= unit && top > 0)
+        {
+            top--;
+            touchPaintOffsetY -= unit;
+        }
+        if ((top == 0 && touchPaintOffsetY > 0)
+                || (top == max && touchPaintOffsetY < 0))
+        {
+            touchPaintOffsetY = 0;
+        }
+        int optionsTop = metrics.bodyTop + rowHeight();
+        touch.repaintFrame(this, 0, optionsTop, metrics.width,
+                Math.max(1, metrics.bodyBottom - optionsTop));
+    }
+
+    protected void pointerReleased(int x, int y)
+    {
+        if (touch.isPressed()) { pointerDragged(x, y); }
+        boolean dragged = touch.isDragging();
+        int result = touch.release(x, y);
+        if (dragged)
+        {
+            settleTouchScroll();
+            return;
+        }
+        if (!touchOnOption || result == TouchGesture.NONE) { return; }
+        if (result == TouchGesture.LONG_PRESS)
+        {
+            TouchContextListener listener = touchContextListener;
+            if (listener != null) { listener.onTouchContextRequested(this); }
+        }
+        else { toggle(); }
+    }
+
+    private void settleTouchScroll()
+    {
+        int unit = rowHeight();
+        int max = Math.max(0, selectedOptions.length - visibleRows());
+        if (touchPaintOffsetY <= -unit / 2 && top < max) { top++; }
+        else if (touchPaintOffsetY >= unit / 2 && top > 0) { top--; }
+        touchPaintOffsetY = 0;
+        clampSelectionToViewport();
+        repaint();
+    }
+
+    private void clampSelectionToViewport()
+    {
+        if (selectedOptions.length == 0) { selected = 0; return; }
+        int last = Math.min(selectedOptions.length - 1,
+                top + visibleRows() - 1);
+        if (selected < top) { selected = top; }
+        if (selected > last) { selected = last; }
+    }
+
+    private boolean selectAt(int y)
+    {
+        updateMetrics();
+        int height = rowHeight();
+        int optionsTop = metrics.bodyTop + height;
+        if (y < optionsTop || y >= metrics.bodyBottom) { return false; }
+        int index = top + (y - optionsTop) / height;
+        if (index < 0 || index >= selectedOptions.length) { return false; }
+        selected = index;
+        ensureVisible(visibleRows());
+        repaint();
+        return true;
+    }
 
     private void move(int delta)
     {
@@ -267,6 +382,8 @@ public class PollScreen extends Canvas
         if (selected >= top + visible) { top = selected - visible + 1; }
         if (top < 0) { top = 0; }
     }
+
+    public int topIndex() { return top; }
 
     private int rowHeight()
     {

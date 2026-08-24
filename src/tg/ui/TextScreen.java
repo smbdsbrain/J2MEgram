@@ -29,6 +29,10 @@ public class TextScreen extends Canvas
     private final int lineHeight;
     private final Metrics metrics = new Metrics();
     private Theme theme;
+    private final TouchGesture touch = new TouchGesture();
+    private TouchContextListener touchContextListener;
+    /** Uncommitted pixel part of a live pointer scroll. */
+    private int touchPaintOffsetY;
 
     public TextScreen(String title, String[] lines)
     {
@@ -49,6 +53,11 @@ public class TextScreen extends Canvas
     {
         theme = value == null ? Theme.byId(Theme.LIGHT) : value;
         repaint();
+    }
+
+    public void setTouchContextListener(TouchContextListener value)
+    {
+        touchContextListener = value;
     }
 
     public void setLines(String[] newLines)
@@ -147,11 +156,23 @@ public class TextScreen extends Canvas
 
         g.setColor(theme.text);
         g.setFont(font);
-        int y = metrics.bodyTop;
-        for (int i = 0; i < visible; i++)
+        int first = top;
+        int y = metrics.bodyTop + touchPaintOffsetY;
+        if (touchPaintOffsetY > 0 && first > 0)
         {
-            int idx = top + i;
+            first--;
+            y -= lineHeight;
+        }
+        int clipX = g.getClipX();
+        int clipY = g.getClipY();
+        int clipWidth = g.getClipWidth();
+        int clipHeight = g.getClipHeight();
+        g.clipRect(0, metrics.bodyTop, metrics.width, metrics.bodyHeight);
+        for (int i = 0; i < visible + 2; i++)
+        {
+            int idx = first + i;
             if (idx >= lines.length) { break; }
+            if (y >= metrics.bodyBottom) { break; }
             String s = lines[idx];
             if (s != null)
             {
@@ -159,6 +180,7 @@ public class TextScreen extends Canvas
             }
             y += lineHeight;
         }
+        g.setClip(clipX, clipY, clipWidth, clipHeight);
     }
 
     protected void sizeChanged(int width, int height)
@@ -198,13 +220,74 @@ public class TextScreen extends Canvas
         keyPressed(keyCode);
     }
 
+    protected void pointerPressed(int x, int y)
+    {
+        touch.press(x, y);
+        touchPaintOffsetY = 0;
+    }
+
+    protected void pointerDragged(int x, int y)
+    {
+        if (!touch.drag(x, y)) { return; }
+        int delta = touch.deltaY();
+        if (delta == 0) { return; }
+        touchPaintOffsetY += delta;
+        int unit = Math.max(1, lineHeight);
+        int steps = touchPaintOffsetY / unit;
+        if (steps != 0)
+        {
+            touchPaintOffsetY -= steps * unit;
+            scrollTouch(-steps);
+        }
+        if ((top == 0 && touchPaintOffsetY > 0)
+                || (top == maxTop() && touchPaintOffsetY < 0))
+        {
+            touchPaintOffsetY = 0;
+        }
+        touch.repaintFrame(this, 0, metrics.bodyTop,
+                metrics.width, metrics.bodyHeight);
+    }
+
+    protected void pointerReleased(int x, int y)
+    {
+        if (touch.isPressed()) { pointerDragged(x, y); }
+        boolean dragged = touch.isDragging();
+        int result = touch.release(x, y);
+        if (dragged)
+        {
+            settleTouchScroll();
+            return;
+        }
+        if (result == TouchGesture.LONG_PRESS)
+        {
+            TouchContextListener listener = touchContextListener;
+            if (listener != null) { listener.onTouchContextRequested(this); }
+        }
+    }
+
+    private void settleTouchScroll()
+    {
+        int unit = Math.max(1, lineHeight);
+        if (touchPaintOffsetY <= -unit / 2) { scrollTouch(1); }
+        else if (touchPaintOffsetY >= unit / 2) { scrollTouch(-1); }
+        touchPaintOffsetY = 0;
+        repaint();
+    }
+
+    public int topLine() { return top; }
+
     private void scroll(int delta)
+    {
+        scrollTouch(delta);
+        repaint();
+    }
+
+    private void scrollTouch(int delta)
     {
         int max = maxTop();
         top += delta;
         if (top > max) { top = max; }
         if (top < 0) { top = 0; }
-        repaint();
     }
 
     private int visibleLines()

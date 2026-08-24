@@ -33,6 +33,13 @@ private endpoints. Test messages use an opaque marker only.
 - [ ] Full text and entity picker showed the exact target; external launch was cancelled.
 - [ ] Own outgoing text could be edited and showed `edited` after the update.
 - [ ] Back/soft-key navigation worked without relying on a navigation cluster.
+- [ ] Touch: short taps matched FIRE on chats, topics, messages, polls,
+      reactions and photos.
+- [ ] Touch: swipes scrolled without activating a row; photo drag panned and
+      clamped at its edges.
+- [ ] Touch: a long press focused the touched item and opened applicable
+      actions; selecting Back returned to the correct screen.
+- [ ] The same flows still worked with d-pad/numeric navigation.
 - [ ] No crash-log entry was created during this run.
 - [ ] Test marker was removed for everyone, or recorded separately for cleanup.
 

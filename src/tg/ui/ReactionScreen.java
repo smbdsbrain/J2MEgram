@@ -28,6 +28,11 @@ public class ReactionScreen extends Canvas
     private int selected;
     private int top;
     private ActivationListener activationListener;
+    private final TouchGesture touch = new TouchGesture();
+    private TouchContextListener touchContextListener;
+    /** Uncommitted pixel part of a live pointer scroll. */
+    private int touchPaintOffsetY;
+    private boolean touchOnRow;
 
     public ReactionScreen()
     {
@@ -52,6 +57,11 @@ public class ReactionScreen extends Canvas
     public void setActivationListener(ActivationListener value)
     {
         activationListener = value;
+    }
+
+    public void setTouchContextListener(TouchContextListener value)
+    {
+        touchContextListener = value;
     }
 
     public void setReactions(String[] values, String[] names,
@@ -110,13 +120,25 @@ public class ReactionScreen extends Canvas
         int rowHeight = rowHeight();
         int visible = metrics.bodyHeight / rowHeight;
         if (visible < 1) { visible = 1; }
-        ensureVisible(visible);
-        int y = metrics.bodyTop;
-        int count = itemCount();
-        for (int row = 0; row < visible; row++)
+        if (!touch.isDragging()) { ensureVisible(visible); }
+        int first = top;
+        int y = metrics.bodyTop + touchPaintOffsetY;
+        if (touchPaintOffsetY > 0 && first > 0)
         {
-            int index = top + row;
+            first--;
+            y -= rowHeight;
+        }
+        int count = itemCount();
+        int clipX = g.getClipX();
+        int clipY = g.getClipY();
+        int clipWidth = g.getClipWidth();
+        int clipHeight = g.getClipHeight();
+        g.clipRect(0, metrics.bodyTop, metrics.width, metrics.bodyHeight);
+        for (int row = 0; row < visible + 2; row++)
+        {
+            int index = first + row;
             if (index >= count) { break; }
+            if (y >= metrics.bodyBottom) { break; }
             boolean focused = index == selected;
             if (focused)
             {
@@ -164,6 +186,7 @@ public class ReactionScreen extends Canvas
             }
             y += rowHeight;
         }
+        g.setClip(clipX, clipY, clipWidth, clipHeight);
     }
 
     protected void sizeChanged(int width, int height)
@@ -184,6 +207,93 @@ public class ReactionScreen extends Canvas
     }
 
     protected void keyRepeated(int keyCode) { keyPressed(keyCode); }
+
+    protected void pointerPressed(int x, int y)
+    {
+        touch.press(x, y);
+        touchPaintOffsetY = 0;
+        touchOnRow = selectAt(y);
+    }
+
+    protected void pointerDragged(int x, int y)
+    {
+        if (!touch.drag(x, y)) { return; }
+        int delta = touch.deltaY();
+        if (delta == 0) { return; }
+        touchPaintOffsetY += delta;
+        int unit = rowHeight();
+        int visible = Math.max(1, metrics.bodyHeight / unit);
+        int max = Math.max(0, itemCount() - visible);
+        while (touchPaintOffsetY <= -unit && top < max)
+        {
+            top++;
+            touchPaintOffsetY += unit;
+        }
+        while (touchPaintOffsetY >= unit && top > 0)
+        {
+            top--;
+            touchPaintOffsetY -= unit;
+        }
+        if ((top == 0 && touchPaintOffsetY > 0)
+                || (top == max && touchPaintOffsetY < 0))
+        {
+            touchPaintOffsetY = 0;
+        }
+        touch.repaintFrame(this, 0, metrics.bodyTop,
+                metrics.width, metrics.bodyHeight);
+    }
+
+    protected void pointerReleased(int x, int y)
+    {
+        if (touch.isPressed()) { pointerDragged(x, y); }
+        boolean dragged = touch.isDragging();
+        int result = touch.release(x, y);
+        if (dragged)
+        {
+            settleTouchScroll();
+            return;
+        }
+        if (!touchOnRow || result == TouchGesture.NONE) { return; }
+        if (result == TouchGesture.LONG_PRESS)
+        {
+            TouchContextListener listener = touchContextListener;
+            if (listener != null) { listener.onTouchContextRequested(this); }
+        }
+        else { activate(); }
+    }
+
+    private void settleTouchScroll()
+    {
+        int unit = rowHeight();
+        int visible = Math.max(1, metrics.bodyHeight / unit);
+        int max = Math.max(0, itemCount() - visible);
+        if (touchPaintOffsetY <= -unit / 2 && top < max) { top++; }
+        else if (touchPaintOffsetY >= unit / 2 && top > 0) { top--; }
+        touchPaintOffsetY = 0;
+        clampSelectionToViewport(visible);
+        repaint();
+    }
+
+    private void clampSelectionToViewport(int visible)
+    {
+        int count = itemCount();
+        if (count == 0) { selected = 0; return; }
+        int last = Math.min(count - 1, top + visible - 1);
+        if (selected < top) { selected = top; }
+        if (selected > last) { selected = last; }
+    }
+
+    private boolean selectAt(int y)
+    {
+        updateMetrics();
+        if (y < metrics.bodyTop || y >= metrics.bodyBottom) { return false; }
+        int index = top + (y - metrics.bodyTop) / rowHeight();
+        if (index < 0 || index >= itemCount()) { return false; }
+        selected = index;
+        ensureVisible(Math.max(1, metrics.bodyHeight / rowHeight()));
+        repaint();
+        return true;
+    }
 
     private void move(int delta)
     {
@@ -217,6 +327,9 @@ public class ReactionScreen extends Canvas
     {
         move(delta);
     }
+
+    public int selectedIndex() { return selected; }
+    public int topIndex() { return top; }
 
     private void activate()
     {

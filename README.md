@@ -62,7 +62,15 @@ Moscow GMT+4 time-zone table makes FakeTLS fail until a correct GMT+3 zone is
 selected; the [E6-00 hardware report](docs/hardware/nokia-e6-00.md) records that
 trap and its unusual fullscreen geometry.
 
-That is **four devices on a handful of networks**, and it establishes nothing about yours.
+A fifth device, the touchscreen Fly E190 Wi-Fi, has connected through a
+FakeTLS MTProxy, resumed a stored session and loaded cached dialogs in a
+measured ~2.5 MB Java heap. Its native Canvas reports pointer press and motion,
+which is the target for the parallel touch controls described in
+[touch navigation](docs/touch-navigation.md). Basic tap, hold and swipe flows
+work on the handset; live drag rendering remains noticeably slow on its vendor
+VM.
+
+That is **five devices on a handful of networks**, and it establishes nothing about yours.
 Installing it and reporting what happens is genuinely the most useful thing
 anyone can do for this project right now.
 
@@ -142,6 +150,8 @@ anyone can do for this project right now.
 
 **Interface**
 - Adaptive Canvas UI that measures the viewport instead of assuming it
+- Parallel keypad and touchscreen control: tap is `FIRE`, hold opens actions,
+  and a live finger-tracked drag scrolls lists/history or pans a photo
 - Light, dark and high-contrast themes
 - Diagnostics: per-route attempt log, byte counters, retry countdown
 - In-app log, and a crash log that survives the MIDlet dying

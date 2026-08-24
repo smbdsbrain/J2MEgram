@@ -21,6 +21,8 @@ public class PhotoScreen extends Canvas
     private int zoomMode;
     private int[] zoomSource = new int[0];
     private int[] zoomViewport = new int[0];
+    private final TouchGesture touch = new TouchGesture();
+    private TouchContextListener touchContextListener;
 
     public PhotoScreen()
     {
@@ -42,6 +44,11 @@ public class PhotoScreen extends Canvas
     {
         status = value == null ? "" : value;
         repaint();
+    }
+
+    public void setTouchContextListener(TouchContextListener value)
+    {
+        touchContextListener = value;
     }
 
     public void setImage(Image value)
@@ -170,6 +177,33 @@ public class PhotoScreen extends Canvas
     }
 
     protected void keyRepeated(int keyCode) { keyPressed(keyCode); }
+
+    protected void pointerPressed(int x, int y)
+    {
+        touch.press(x, y);
+    }
+
+    protected void pointerDragged(int x, int y)
+    {
+        if (!touch.drag(x, y)) { return; }
+        if (image == null) { return; }
+        offsetX -= touch.deltaX();
+        offsetY -= touch.deltaY();
+        clamp();
+        touch.repaintFrame(this, 0, 0, metrics.width, metrics.height);
+    }
+
+    protected void pointerReleased(int x, int y)
+    {
+        if (touch.isPressed()) { pointerDragged(x, y); }
+        int result = touch.release(x, y);
+        if (result == TouchGesture.LONG_PRESS)
+        {
+            TouchContextListener listener = touchContextListener;
+            if (listener != null) { listener.onTouchContextRequested(this); }
+        }
+        else if (result == TouchGesture.TAP && image != null) { nextZoom(); }
+    }
 
     private void clamp()
     {

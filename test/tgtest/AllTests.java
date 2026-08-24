@@ -75,6 +75,7 @@ public final class AllTests
             new Phase5AuthTest(),
             new Phase6Test(),
             new Phase7DesignTest(),
+            new TouchInputTest(),
             new PhotoStreamTest(),
             new JpegDecoderTest(),
             new SelfTestTest(),

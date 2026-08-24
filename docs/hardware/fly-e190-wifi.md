@@ -105,6 +105,11 @@ than reserved independently per store.
 - Display: 65,536 colours, approximately 16 bpp; normal Canvas 320x409 inside
   the physical 320x480 display. Full-screen Canvas size was not measured.
 - Pointer press, pointer motion, key repeats and double buffering are present.
+- The client now has Canvas pointer handlers for chats, topics, messages,
+  polls, reactions, photos and read-only text.  Automated MIDP tests cover tap,
+  hold and drag semantics. Basic navigation has also been exercised on this
+  physical E190: taps, long presses and swipes work, while live drag rendering
+  remains noticeably slow and jerky on its vendor VM.
 - MIDP PNG decode passed (8x8 in 4 ms). Platform JPEG decode failed with
   `IllegalArgumentException`; Telegram uses its bundled JPEG decoder instead.
 

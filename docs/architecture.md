@@ -44,6 +44,22 @@ Consequences:
 | `tg.mt` | MTProto transport, session, auth key | no |
 | `tg.api` | Telegram API layer | no |
 
+## Input parity
+
+The application-drawn screens accept d-pad and pointer input in parallel.
+`TouchGesture` only classifies pointer motion as tap, long press or drag; hit
+testing stays in each Canvas because rows, transcript lines, poll answers and
+photo pixels have different geometry.  A tap calls the same activation method
+as `FIRE`.  Directional key handlers are unchanged.
+
+A long press focuses the item first, then asks `TgMidlet` for a native MIDP
+`List` of applicable actions.  Selecting a row routes the original `Command`
+against the original Canvas, so reply, edit, media, deletion and navigation do
+not acquire touch-only implementations.  Native `List`, `Form` and `TextBox`
+screens continue to use the firmware's pointer handling.  The complete control
+map and physical-device checklist live in
+[touch-navigation.md](touch-navigation.md).
+
 The root package is `tg` rather than something descriptive because every class
 name lands in the constant pool of every class that references it, and many
 Java ME runtimes impose strict JAR-size limits.

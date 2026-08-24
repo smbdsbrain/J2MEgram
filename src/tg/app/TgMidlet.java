@@ -2,6 +2,7 @@ package tg.app;
 
 import javax.microedition.lcdui.Alert;
 import javax.microedition.lcdui.AlertType;
+import javax.microedition.lcdui.Canvas;
 import javax.microedition.lcdui.Command;
 import javax.microedition.lcdui.CommandListener;
 import javax.microedition.lcdui.Display;
@@ -77,6 +78,7 @@ import tg.ui.DialogListScreen;
 import tg.ui.EmojiText;
 import tg.ui.SettingsScreen;
 import tg.ui.TextScreen;
+import tg.ui.TouchContextListener;
 import tg.ui.TopicListScreen;
 import tg.ui.PhotoScreen;
 import tg.ui.PollScreen;
@@ -145,6 +147,11 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     private final Command cmdChangeNumber =
             new Command("Change number", Command.BACK, 2);
     private final Command cmdOpen    = new Command("Open", Command.SCREEN, 1);
+    /** Context-menu route to the focused Canvas item's FIRE action. */
+    private final Command cmdTouchOpen = new Command("Open", Command.ITEM, 1);
+    /** Touchable row that dismisses a long-press list without navigating. */
+    private final Command cmdTouchCancel =
+            new Command("Cancel", Command.CANCEL, 1);
     private final Command cmdRefresh = new Command("Refresh", Command.SCREEN, 3);
     private final Command cmdWrite   = new Command("Write", Command.SCREEN, 1);
     private final Command cmdSend    = new Command("Send", Command.SCREEN, 1);
@@ -237,6 +244,19 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     private final Command cmdOpenAvatar = new Command("Open avatar", Command.SCREEN, 1);
     private final Command cmdEditProfile = new Command("Edit profile", Command.SCREEN, 1);
     private final Command cmdSaveProfile = new Command("Save", Command.SCREEN, 1);
+
+    /** Long-press menu is native List UI, so touch-only devices can use it. */
+    private List touchContextMenu;
+    private Command[] touchContextActions = new Command[0];
+    private Displayable touchContextOwner;
+    private final TouchContextListener touchContextListener =
+            new TouchContextListener()
+    {
+        public void onTouchContextRequested(Canvas source)
+        {
+            showTouchContextMenu(source);
+        }
+    };
 
     /*
      * Not built here either: both deliver their callbacks through the display,
@@ -1028,7 +1048,11 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
 
     private void route(Command c, Displayable d)
     {
-        if (c == cmdExit)
+        if (d == touchContextMenu)
+        {
+            routeTouchContext(c);
+        }
+        else if (c == cmdExit)
         {
             destroyApp(true);
             notifyDestroyed();
@@ -1077,6 +1101,10 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         else if (c == cmdOpen)
         {
             openSelectedDialog();
+        }
+        else if (c == cmdTouchOpen && d instanceof ChatScreen)
+        {
+            ((ChatScreen) d).activateFocused();
         }
         else if (c == cmdForwardHere
                 || (c == List.SELECT_COMMAND && d == forwardList))
@@ -1238,7 +1266,12 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         }
         else if (c == cmdProfile)
         {
-            showContextProfile();
+            if (d == dialogList)
+            {
+                Peer selected = dialogList.selectedPeer();
+                if (selected != null) { showProfile(selected, dialogList); }
+            }
+            else { showContextProfile(); }
         }
         else if (c == cmdReply)
         {
@@ -1395,6 +1428,140 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             logOutEverywhere();
         }
+    }
+
+    /**
+     * Turn a long press into a native, touchable action list for the focused
+     * Canvas item.  The rows route through the same Commands as the MIDP
+     * Options menu; there is no second implementation of message actions.
+     */
+    private void showTouchContextMenu(Canvas source)
+    {
+        if (source == null || display == null) { return; }
+        Command[] actions = new Command[16];
+        int count = 0;
+        String title = "Options";
+
+        if (source == dialogList)
+        {
+            title = "Chat options";
+            actions[count++] = cmdOpen;
+            actions[count++] = cmdProfile;
+            actions[count++] = cmdFindChat;
+            actions[count++] = cmdFilter;
+            actions[count++] = cmdBack;
+        }
+        else if (source == topicScreen)
+        {
+            title = "Topic options";
+            actions[count++] = cmdOpenTopic;
+            actions[count++] = cmdRefresh;
+            actions[count++] = cmdMoreTopics;
+            actions[count++] = cmdBack;
+        }
+        else if (source instanceof ChatScreen)
+        {
+            ChatScreen chat = (ChatScreen) source;
+            Message message = findOpenMessage(chat.focusedMessageId());
+            if (message == null) { return; }
+            title = "Message #" + message.id;
+            if (message.media != null && (message.media.kind == Media.PHOTO
+                    || message.media.kind == Media.POLL))
+            {
+                actions[count++] = cmdTouchOpen;
+            }
+            actions[count++] = cmdReactions;
+            actions[count++] = cmdReply;
+            if (message.canEditText()) { actions[count++] = cmdEditMessage; }
+            if (message.hasComments && message.id > 0)
+            {
+                actions[count++] = cmdOpenComments;
+            }
+            if (message.media != null && message.media.kind == Media.POLL
+                    && message.media.poll != null)
+            {
+                actions[count++] = cmdPoll;
+            }
+            if (chat.hasConcealedSpoilers(message.id))
+            {
+                actions[count++] = cmdRevealSpoiler;
+            }
+            actions[count++] = cmdViewFullText;
+            actions[count++] = cmdEntityActions;
+            actions[count++] = cmdForward;
+            actions[count++] = cmdDeleteMessage;
+            actions[count++] = cmdProfile;
+            actions[count++] = cmdWrite;
+            actions[count++] = cmdBack;
+        }
+        else if (source == pollScreen)
+        {
+            title = "Poll option";
+            actions[count++] = cmdSelectPoll;
+            if (pollScreen.canSubmit()) { actions[count++] = cmdVote; }
+            actions[count++] = cmdBack;
+        }
+        else if (source == reactionScreen)
+        {
+            title = "Reaction option";
+            actions[count++] = cmdSelectReaction;
+            actions[count++] = cmdBack;
+        }
+        else if (source == photoScreen)
+        {
+            title = "Photo options";
+            if (photoScreen.image() == null) { actions[count++] = cmdRetryPhoto; }
+            else { actions[count++] = cmdZoomPhoto; }
+            actions[count++] = cmdBack;
+        }
+        else if (source instanceof TextScreen)
+        {
+            title = "Text options";
+            actions[count++] = cmdBack;
+        }
+        else { return; }
+
+        // Native soft-key Back dismisses the list too, but a pointer-only
+        // handset needs a row it can tap without leaving the owner screen.
+        actions[count++] = cmdTouchCancel;
+
+        touchContextActions = new Command[count];
+        System.arraycopy(actions, 0, touchContextActions, 0, count);
+        touchContextOwner = source;
+        touchContextMenu = new List(title, List.IMPLICIT);
+        for (int i = 0; i < count; i++)
+        {
+            touchContextMenu.append(touchContextActions[i].getLabel(), null);
+        }
+        touchContextMenu.addCommand(cmdBack);
+        touchContextMenu.setCommandListener(this);
+        display.setCurrent(touchContextMenu);
+    }
+
+    private void routeTouchContext(Command command)
+    {
+        if (command == cmdBack)
+        {
+            closeTouchContextMenu();
+            return;
+        }
+        if (command != List.SELECT_COMMAND || touchContextMenu == null) { return; }
+        int index = touchContextMenu.getSelectedIndex();
+        if (index < 0 || index >= touchContextActions.length) { return; }
+        Command selected = touchContextActions[index];
+        Displayable owner = touchContextOwner;
+        closeTouchContextMenu();
+        if (selected == cmdTouchCancel) { return; }
+        if (owner != null) { route(selected, owner); }
+    }
+
+    private void closeTouchContextMenu()
+    {
+        Displayable owner = touchContextOwner;
+        touchContextMenu = null;
+        touchContextOwner = null;
+        touchContextActions = new Command[0];
+        if (owner != null) { display.setCurrent(owner); }
     }
 
     private void goBack(Displayable from)
@@ -2378,6 +2545,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             dialogList.addCommand(cmdBack);
             dialogList.addCommand(cmdExit);
             dialogList.setCommandListener(this);
+            dialogList.setTouchContextListener(touchContextListener);
             dialogList.setActivationListener(
                     new DialogListScreen.ActivationListener()
             {
@@ -3585,6 +3753,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         screen.addCommand(cmdLog);
         screen.addCommand(cmdBack);
         screen.setCommandListener(this);
+        screen.setTouchContextListener(touchContextListener);
         screen.setActivationListener(new TopicListScreen.ActivationListener()
         {
             public void onTopicActivated(ForumTopic topic)
@@ -4227,6 +4396,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         screen.addCommand(cmdFindMessages);
         screen.addCommand(cmdMarkAllRead);
         screen.setCommandListener(this);
+        screen.setTouchContextListener(touchContextListener);
         screen.setActivationListener(new ChatScreen.ActivationListener()
         {
             public void onMessageActivated(int messageId)
@@ -6820,6 +6990,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         pollScreen.addCommand(cmdPollDown);
         pollScreen.addCommand(cmdBack);
         pollScreen.setCommandListener(this);
+        pollScreen.setTouchContextListener(touchContextListener);
         pollScreen.setSelectionListener(new PollScreen.SelectionListener()
         {
             public void onSelectionChanged()
@@ -6996,6 +7167,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             reactionScreen.addCommand(cmdReactionDown);
             reactionScreen.addCommand(cmdBack);
             reactionScreen.setCommandListener(this);
+            reactionScreen.setTouchContextListener(touchContextListener);
             reactionScreen.setActivationListener(
                     new ReactionScreen.ActivationListener()
             {
@@ -7059,6 +7231,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         if (message == null || peer == null) { return; }
         reactionActorsScreen = new TextScreen("Reactions",
                 new String[] { "Loading..." }, currentTheme());
+        reactionActorsScreen.setTouchContextListener(touchContextListener);
         reactionActorsScreen.withBack(cmdBack, this);
         final TextScreen actorsScreen = reactionActorsScreen;
         reactionActorsPeer = peer;
@@ -7476,6 +7649,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             photoScreen.addCommand(cmdRetryPhoto);
             photoScreen.addCommand(cmdZoomPhoto);
             photoScreen.setCommandListener(this);
+            photoScreen.setTouchContextListener(touchContextListener);
         }
         photoScreen.setImage(null);
         if (cachedPhoto != null && cachedPhotoId == message.media.photo.id)
@@ -8068,6 +8242,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     {
         TextScreen screen = new TextScreen("Log", Diag.snapshot(),
                 currentTheme());
+        screen.setTouchContextListener(touchContextListener);
         screen.addCommand(cmdBack);
         screen.setCommandListener(this);
         screen.scrollToEnd();
@@ -8078,6 +8253,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     {
         TextScreen screen = new TextScreen("Connection diagnostics",
                                            diagnosticLines(), currentTheme());
+        screen.setTouchContextListener(touchContextListener);
         screen.addCommand(cmdBack);
         screen.addCommand(cmdReconnect);
         screen.addCommand(cmdTestDrop);
@@ -8102,6 +8278,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     {
         String[] lines = crashLogLines();
         TextScreen screen = new TextScreen("Crash log", lines, currentTheme());
+        screen.setTouchContextListener(touchContextListener);
         screen.addCommand(cmdBack);
         screen.addCommand(cmdUpload);
         screen.addCommand(cmdClearCrash);
@@ -8207,6 +8384,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
 
         final TextScreen screen = new TextScreen("Upload", new String[] { "starting..." },
                                                  currentTheme());
+        screen.setTouchContextListener(touchContextListener);
         screen.addCommand(cmdBack);
         screen.setCommandListener(this);
         pushScreen(screen);
@@ -8425,6 +8603,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             "",
             "recorded in the crash log"
         }, currentTheme());
+        screen.setTouchContextListener(touchContextListener);
         screen.addCommand(cmdBack);
         screen.addCommand(cmdLog);
         screen.setCommandListener(this);

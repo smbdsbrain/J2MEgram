@@ -52,6 +52,11 @@ public class TopicListScreen extends Canvas
     private String windowLabel = "";
     private ActivationListener activationListener;
     private ViewportListener viewportListener;
+    private final TouchGesture touch = new TouchGesture();
+    private TouchContextListener touchContextListener;
+    /** Uncommitted pixel part of a live pointer scroll. */
+    private int touchPaintOffsetY;
+    private boolean touchOnRow;
 
     public TopicListScreen(Theme theme, Peer peer)
     {
@@ -75,6 +80,11 @@ public class TopicListScreen extends Canvas
     public void setViewportListener(ViewportListener value)
     {
         viewportListener = value;
+    }
+
+    public void setTouchContextListener(TouchContextListener value)
+    {
+        touchContextListener = value;
     }
 
     /**
@@ -186,8 +196,14 @@ public class TopicListScreen extends Canvas
                 "Topics " + count, state);
 
         int visible = metrics.visibleRows();
-        ensureVisible();
-        int y = metrics.bodyTop;
+        if (!touch.isDragging()) { ensureVisible(); }
+        int first = top;
+        int y = metrics.bodyTop + touchPaintOffsetY;
+        if (touchPaintOffsetY > 0 && first > 0)
+        {
+            first--;
+            y -= metrics.rowHeight;
+        }
         if (topics.length == 0)
         {
             g.setColor(theme.secondaryText);
@@ -195,12 +211,22 @@ public class TopicListScreen extends Canvas
             g.drawString(emptyText, metrics.padding,
                     y + metrics.padding, Graphics.TOP | Graphics.LEFT);
         }
-        for (int row = 0; row < visible; row++)
+        int clipX = g.getClipX();
+        int clipY = g.getClipY();
+        int clipWidth = g.getClipWidth();
+        int clipHeight = g.getClipHeight();
+        g.clipRect(0, metrics.bodyTop, metrics.width, metrics.bodyHeight);
+        for (int row = 0; row < visible + 2; row++)
         {
-            int index = top + row;
+            int index = first + row;
             if (index >= topics.length) { break; }
+            if (y >= metrics.bodyBottom) { break; }
             ForumTopic topic = topics[index];
-            if (topic == null) { continue; }
+            if (topic == null)
+            {
+                y += metrics.rowHeight;
+                continue;
+            }
             boolean focused = index == selected;
             if (focused)
             {
@@ -273,6 +299,7 @@ public class TopicListScreen extends Canvas
                     metrics.width - 1, y + metrics.rowHeight - 1);
             y += metrics.rowHeight;
         }
+        g.setClip(clipX, clipY, clipWidth, clipHeight);
     }
 
     protected void keyPressed(int keyCode)
@@ -292,16 +319,114 @@ public class TopicListScreen extends Canvas
         }
         else if (action == FIRE || keyCode == KEY_NUM5)
         {
-            ActivationListener listener = activationListener;
-            ForumTopic topic = selectedTopic();
-            if (listener != null && topic != null)
-            {
-                listener.onTopicActivated(topic);
-            }
+            activateSelected();
         }
     }
 
     protected void keyRepeated(int keyCode) { keyPressed(keyCode); }
+
+    protected void pointerPressed(int x, int y)
+    {
+        touch.press(x, y);
+        touchPaintOffsetY = 0;
+        touchOnRow = selectAt(y);
+    }
+
+    protected void pointerDragged(int x, int y)
+    {
+        if (!touch.drag(x, y)) { return; }
+        int delta = touch.deltaY();
+        if (delta == 0) { return; }
+        touchPaintOffsetY += delta;
+        updateMetrics();
+        int unit = Math.max(1, metrics.rowHeight);
+        int visible = metrics.visibleRows();
+        int max = Math.max(0, topics.length - visible);
+        while (touchPaintOffsetY <= -unit && top < max)
+        {
+            top++;
+            touchPaintOffsetY += unit;
+        }
+        while (touchPaintOffsetY >= unit && top > 0)
+        {
+            top--;
+            touchPaintOffsetY -= unit;
+        }
+        if ((top == 0 && touchPaintOffsetY > 0)
+                || (top == max && touchPaintOffsetY < 0))
+        {
+            touchPaintOffsetY = 0;
+        }
+        touch.repaintFrame(this, 0, metrics.bodyTop,
+                metrics.width, metrics.bodyHeight);
+    }
+
+    protected void pointerReleased(int x, int y)
+    {
+        if (touch.isPressed()) { pointerDragged(x, y); }
+        boolean dragged = touch.isDragging();
+        int result = touch.release(x, y);
+        if (dragged)
+        {
+            settleTouchScroll();
+            return;
+        }
+        if (!touchOnRow || result == TouchGesture.NONE) { return; }
+        if (result == TouchGesture.LONG_PRESS)
+        {
+            TouchContextListener listener = touchContextListener;
+            if (listener != null) { listener.onTouchContextRequested(this); }
+        }
+        else { activateSelected(); }
+    }
+
+    private void settleTouchScroll()
+    {
+        updateMetrics();
+        int unit = Math.max(1, metrics.rowHeight);
+        int max = Math.max(0, topics.length - metrics.visibleRows());
+        if (touchPaintOffsetY <= -unit / 2 && top < max) { top++; }
+        else if (touchPaintOffsetY >= unit / 2 && top > 0) { top--; }
+        touchPaintOffsetY = 0;
+        clampSelectionToViewport();
+        repaint();
+        viewportChanged();
+    }
+
+    private void clampSelectionToViewport()
+    {
+        if (topics.length == 0) { selected = 0; return; }
+        int last = Math.min(topics.length - 1,
+                top + metrics.visibleRows() - 1);
+        if (selected < top) { selected = top; }
+        if (selected > last) { selected = last; }
+    }
+
+    private boolean selectAt(int y)
+    {
+        updateMetrics();
+        if (y < metrics.bodyTop || y >= metrics.bodyBottom) { return false; }
+        int index = top + (y - metrics.bodyTop) / metrics.rowHeight;
+        if (index < 0 || index >= topics.length || topics[index] == null)
+        {
+            return false;
+        }
+        selected = index;
+        ensureVisible();
+        repaint();
+        viewportChanged();
+        return true;
+    }
+
+    private void activateSelected()
+    {
+        ActivationListener listener = activationListener;
+        ForumTopic topic = selectedTopic();
+        if (listener != null && topic != null)
+        {
+            listener.onTopicActivated(topic);
+        }
+    }
 
     private void move(int delta)
     {
