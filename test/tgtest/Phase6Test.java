@@ -2,6 +2,7 @@ package tgtest;
 
 import tg.api.Api;
 import tg.api.Dialog;
+import tg.api.Media;
 import tg.api.Message;
 import tg.api.OutgoingMessage;
 import tg.api.PageMerge;
@@ -160,6 +161,14 @@ public final class Phase6Test implements Test
         Message message = message(4, "text");
         message.outgoing = true;
         Assert.isTrue("own server text is editable", message.canEditText());
+        message.media = new Media();
+        message.media.kind = Media.LINK;
+        Assert.isTrue("own text with web preview is editable",
+                message.canEditText());
+        message.media.kind = Media.PHOTO;
+        Assert.isFalse("attached media is not edited as plain text",
+                message.canEditText());
+        message.media = null;
         message.outgoing = false;
         Assert.isFalse("incoming is not editable", message.canEditText());
         message.outgoing = true;

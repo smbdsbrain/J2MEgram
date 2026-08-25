@@ -28,10 +28,18 @@ public final class Dialog
     public Peer peer;
     public int topMessageId;
     public int unreadCount;
+    /** Server-side manual unread marker, independent of unreadCount. */
+    public boolean unreadMark;
     public boolean pinned;
     public int readInboxMaxId;
     public int readOutboxMaxId;
     public int channelPts;
+
+    /** 0 is the main list, 1 is Telegram's archive peer folder. */
+    public int folderId;
+
+    /** Unix time until notifications are muted, or 0 when not muted. */
+    public int muteUntil;
 
     /** Preview text of the most recent message; may be empty. */
     public String lastMessage = "";

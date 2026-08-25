@@ -20,9 +20,10 @@ public final class DialogPage
     /**
      * Dialogs the server says exist, or 0 when it did not say.
      *
-     * Advisory. It is the count for the whole list rather than for the folder
-     * being paged, and it can move between requests, so it belongs in a header
-     * and in a "stop asking" heuristic - not in an allocation.
+     * Advisory. It is the count for the requested peer folder (or the main
+     * list when no folder was supplied), and it can move between requests, so
+     * it belongs in a header and in a "stop asking" heuristic - not in an
+     * allocation.
      */
     public int total;
 
@@ -33,4 +34,32 @@ public final class DialogPage
     public boolean notModified;
 
     public int size() { return dialogs == null ? 0 : dialogs.length; }
+
+    /**
+     * Keep only dialogs that actually declare membership in a peer folder.
+     *
+     * Telegram may prefix a folder-aware getDialogs reply with pinned dialogs
+     * from another list.  Those ordinary main-list dialogs omit folder_id; an
+     * omitted field means folder 0, not "the folder that was requested".
+     */
+    public void retainFolder(int folderId)
+    {
+        if (dialogs == null || dialogs.length == 0) { return; }
+        int count = 0;
+        for (int i = 0; i < dialogs.length; i++)
+        {
+            if (dialogs[i] != null && dialogs[i].folderId == folderId) { count++; }
+        }
+        if (count == dialogs.length) { return; }
+        Dialog[] kept = new Dialog[count];
+        int at = 0;
+        for (int i = 0; i < dialogs.length; i++)
+        {
+            if (dialogs[i] != null && dialogs[i].folderId == folderId)
+            {
+                kept[at++] = dialogs[i];
+            }
+        }
+        dialogs = kept;
+    }
 }

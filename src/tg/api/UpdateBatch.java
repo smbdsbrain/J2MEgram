@@ -14,6 +14,10 @@ public final class UpdateBatch
     public ReactionUpdate[] reactions = new ReactionUpdate[0];
     public PollUpdate[] polls = new PollUpdate[0];
     public boolean fullRefresh;
+    /** Main/archive ordering or membership changed. */
+    public boolean dialogListsChanged;
+    /** Custom folder definitions or their order changed. */
+    public boolean folderDefinitionsChanged;
     public String syncState;
     public String detail;
     /** Seconds until the next automatic sync attempt, or -1 when none. */

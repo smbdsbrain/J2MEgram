@@ -63,6 +63,7 @@ public final class AllTests
             new UnreadPickTest(),
             new ReadQueueTest(),
             new DialogListTest(),
+            new FolderTest(),
             new ForumModelTest(),
             new RequestsForumTest(),
             new ThreadIdentityTest(),

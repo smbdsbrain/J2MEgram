@@ -29,6 +29,7 @@ public final class UpdateSyncTest implements Test
         stateStoreAndBounds();
         requestEncoding();
         exactDuplicateGapAndOverflow();
+        folderSignals();
         channelDifference();
         seedFillsOnlyAbsentCursors();
         threadReadsRouteWithoutRecovery();
@@ -292,6 +293,36 @@ public final class UpdateSyncTest implements Test
         }
         Assert.equal("channel edit pts", 7,
                 sync.snapshot().channelPts(300));
+        sync.close();
+    }
+
+    private static void folderSignals() throws Exception
+    {
+        MemoryUpdateStateStore store = new MemoryUpdateStateStore();
+        UpdateState initial = new UpdateState();
+        initial.accountId = 100;
+        initial.testEnvironment = Dc.isTest();
+        initial.pts = 10;
+        initial.date = 20;
+        store.save(initial);
+
+        FakeInvoker rpc = new FakeInvoker();
+        Capture capture = new Capture();
+        UpdateSync sync = new UpdateSync(rpc, new PeerCache());
+        sync.setStore(store);
+        sync.setListener(capture);
+        sync.online();
+        sync.activate(100);
+        waitForState(sync, UpdateSync.LIVE);
+
+        sync.accept(folderPeersUpdate(200, 1, 11, 1));
+        capture.waitDialogLists(1);
+        Assert.equal("folder update advances pts", 11, waitPts(sync, 11));
+
+        TlWriter filter = new TlWriter(8);
+        filter.writeInt(Api.UPDATE_DIALOG_FILTERS);
+        sync.accept(filter.toByteArray());
+        capture.waitFolderDefinitions(1);
         sync.close();
     }
 
@@ -740,6 +771,8 @@ public final class UpdateSyncTest implements Test
         volatile tg.api.PollUpdate lastPoll;
         volatile boolean sawRetry;
         volatile int fullRefreshCount;
+        volatile int dialogListCount;
+        volatile int folderDefinitionCount;
 
         public synchronized void onBatch(UpdateBatch batch)
         {
@@ -750,6 +783,8 @@ public final class UpdateSyncTest implements Test
             pollCount += batch.polls.length;
             if (batch.retrySeconds >= 0) { sawRetry = true; }
             if (batch.fullRefresh) { fullRefreshCount++; }
+            if (batch.dialogListsChanged) { dialogListCount++; }
+            if (batch.folderDefinitionsChanged) { folderDefinitionCount++; }
             if (batch.messages.length > 0)
             {
                 lastMessage = batch.messages[batch.messages.length - 1];
@@ -819,6 +854,43 @@ public final class UpdateSyncTest implements Test
             Assert.equal("full refresh callback count", expected,
                     fullRefreshCount);
         }
+
+        synchronized void waitDialogLists(int expected) throws Exception
+        {
+            long until = System.currentTimeMillis() + 3000;
+            while (dialogListCount < expected && System.currentTimeMillis() < until)
+            {
+                wait(20);
+            }
+            Assert.equal("dialog-list signal", expected, dialogListCount);
+        }
+
+        synchronized void waitFolderDefinitions(int expected) throws Exception
+        {
+            long until = System.currentTimeMillis() + 3000;
+            while (folderDefinitionCount < expected
+                    && System.currentTimeMillis() < until)
+            {
+                wait(20);
+            }
+            Assert.equal("folder-definition signal", expected,
+                    folderDefinitionCount);
+        }
+    }
+
+    private static byte[] folderPeersUpdate(long userId, int folderId,
+            int pts, int count)
+    {
+        TlWriter w = new TlWriter(48);
+        w.writeInt(Api.UPDATE_FOLDER_PEERS);
+        w.writeVectorHeader(1);
+        w.writeInt(Api.FOLDER_PEER);
+        w.writeInt(Api.PEER_USER);
+        w.writeLong(userId);
+        w.writeInt(folderId);
+        w.writeInt(pts);
+        w.writeInt(count);
+        return w.toByteArray();
     }
 
     private static byte[] state(int pts, int qts, int date, int seq)

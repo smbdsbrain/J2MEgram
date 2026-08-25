@@ -15,12 +15,14 @@ import javax.imageio.ImageIO;
 
 import javax.microedition.lcdui.Alert;
 import javax.microedition.lcdui.Canvas;
+import javax.microedition.lcdui.ChoiceGroup;
 import javax.microedition.lcdui.Command;
 import javax.microedition.lcdui.Displayable;
 import javax.microedition.lcdui.Form;
 import javax.microedition.lcdui.List;
 import javax.microedition.lcdui.StringItem;
 import javax.microedition.lcdui.TextBox;
+import javax.microedition.lcdui.TextField;
 
 import org.microemu.device.j2se.J2SEMutableImage;
 
@@ -81,6 +83,10 @@ public final class PackagedRcE2EDriver
             {
                 exit = pollClient(app, state) ? 0 : 1;
             }
+            else if ("folders".equals(role) && "a".equals(side))
+            {
+                exit = folders(app, state) ? 0 : 1;
+            }
             else
             {
                 throw new Exception("invalid packaged RC E2E role");
@@ -98,6 +104,749 @@ public final class PackagedRcE2EDriver
             System.out.flush();
         }
         System.exit(exit);
+    }
+
+    /**
+     * Drive chat management through the real MIDlet UI and a stored production
+     * RMS session.  The API-only live test is useful wire evidence, but this is
+     * the check that the packaged commands, navigation and async callbacks are
+     * actually connected end to end.
+     */
+    private static boolean folders(EmulatorHarness app, File state)
+            throws Exception
+    {
+        String stamp = Long.toString(System.currentTimeMillis());
+        stamp = stamp.substring(Math.max(0, stamp.length() - 5));
+        String created = "E2EA" + stamp;
+        String renamed = "E2ER" + stamp;
+        String second = "E2EB" + stamp;
+        String target = null;
+        boolean targetArchived = false;
+        boolean targetPinned = false;
+        boolean primaryExists = false;
+        boolean secondExists = false;
+        String primaryName = created;
+
+        try
+        {
+            Canvas main = awaitMainDialogs(app, RPC_MS);
+            Object peer = chooseReversibleDialog(app, main);
+            target = peerToken(peer);
+            String title = peerString(peer, "title");
+            String username = peerString(peer, "username");
+
+            press(app, "Pin");
+            targetPinned = true;
+            awaitPeerCommand(app, target, "Unpin", RPC_MS);
+            press(app, "Unpin");
+            awaitPeerCommand(app, target, "Pin", RPC_MS);
+            targetPinned = false;
+            System.out.println("PACKAGED FOLDERS E2E: main pin/unpin restored");
+
+            press(app, "Archive");
+            targetArchived = true;
+            awaitPeerAbsent(app, target, 15000);
+            openFolders(app);
+            openSystemFolder(app, 1, "Archived");
+            awaitPeerCommand(app, target, "Unarchive", RPC_MS);
+            press(app, "Unarchive");
+            awaitPeerAbsent(app, target, 15000);
+            targetArchived = false;
+            returnToMain(app);
+            press(app, "Refresh");
+            awaitPeerCommand(app, target, "Pin", RPC_MS);
+            System.out.println("PACKAGED FOLDERS E2E: archive/unarchive restored");
+
+            System.out.println("PACKAGED FOLDERS E2E: opening folder manager");
+            openFolders(app);
+            cleanupStaleTestFolders(app);
+            System.out.println("PACKAGED FOLDERS E2E: creating primary folder");
+            createFolderThroughUi(app, created, title, username, target, peer,
+                    true);
+            primaryExists = true;
+            System.out.println("PACKAGED FOLDERS E2E: renaming primary folder");
+            renameFolderThroughUi(app, created, renamed);
+            primaryName = renamed;
+            System.out.println("PACKAGED FOLDERS E2E: creating reorder peer");
+            createFolderThroughUi(app, second, null, null, null, peer, false);
+            secondExists = true;
+            System.out.println("PACKAGED FOLDERS E2E: reordering folders");
+            reorderFolderThroughUi(app, second);
+
+            System.out.println("PACKAGED FOLDERS E2E: opening personal folder");
+            openFolderByName(app, renamed);
+            awaitPeerCommand(app, target, "Pin", RPC_MS);
+            press(app, "Pin");
+            awaitPeerCommand(app, target, "Unpin", RPC_MS);
+            press(app, "Unpin");
+            awaitPeerCommand(app, target, "Pin", RPC_MS);
+            press(app, "Back");
+            awaitFoldersList(app, RPC_MS);
+            System.out.println("PACKAGED FOLDERS E2E: personal-folder pin restored");
+
+            System.out.println("PACKAGED FOLDERS E2E: deleting disposable folders");
+            deleteFolderThroughUi(app, second);
+            secondExists = false;
+            deleteFolderThroughUi(app, renamed);
+            primaryExists = false;
+            System.out.println("PACKAGED FOLDERS E2E: folder CRUD/order restored");
+        }
+        finally
+        {
+            // Names are private, disposable and unique.  Try every possible
+            // editor state so an assertion after create/rename cannot strand a
+            // server folder on the account.
+            if (secondExists) { cleanupFolder(app, second); }
+            if (primaryExists) { cleanupFolder(app, primaryName); }
+            if (targetArchived && target != null)
+            {
+                cleanupArchivedPeer(app, target, true);
+            }
+            if (targetPinned && target != null)
+            {
+                cleanupPinnedPeer(app, target, true);
+            }
+        }
+
+        System.out.println("PACKAGED FOLDERS E2E PASS");
+        return true;
+    }
+
+    private static Canvas awaitMainDialogs(EmulatorHarness app, int timeout)
+            throws Exception
+    {
+        long until = System.currentTimeMillis() + timeout;
+        while (System.currentTimeMillis() < until)
+        {
+            Displayable current = app.current();
+            if (current instanceof Alert)
+            {
+                throw new Exception("dialog list raised an alert");
+            }
+            if (current instanceof Canvas
+                    && EmulatorHarness.command(current, "Folders") != null)
+            {
+                return (Canvas) current;
+            }
+            Thread.sleep(100);
+        }
+        throw new Exception("main dialog list did not appear");
+    }
+
+    private static Object chooseReversibleDialog(EmulatorHarness app,
+            Canvas canvas) throws Exception
+    {
+        selectCanvasRow(app, 0);
+        int count = canvasDialogCount(canvas);
+        if (count < 1) { throw new Exception("authorized dialog list is empty"); }
+        for (int i = 0; i < count; i++)
+        {
+            Object peer = selectedPeer(canvas);
+            String title = peerString(peer, "title");
+            if (peer != null && !peerBoolean(peer, "self")
+                    && title != null && title.length() >= 2
+                    && EmulatorHarness.command(canvas, "Pin") != null
+                    && EmulatorHarness.command(canvas, "Archive") != null)
+            {
+                return peer;
+            }
+            if (i + 1 < count) { app.key(Canvas.KEY_NUM8); }
+        }
+        throw new Exception("no safe unpinned non-self dialog is visible");
+    }
+
+    private static void openFolders(EmulatorHarness app) throws Exception
+    {
+        returnToMain(app);
+        press(app, "Folders");
+        awaitFoldersList(app, RPC_MS);
+        // showFolders renders cached rows immediately, then atomically replaces
+        // the List when getDialogFilters returns.  Let that replacement finish
+        // before allocating a new id in the editor.
+        Thread.sleep(2500);
+        awaitFoldersList(app, RPC_MS);
+    }
+
+    private static List awaitFoldersList(EmulatorHarness app, int timeout)
+            throws Exception
+    {
+        return awaitList(app, "Folders", timeout);
+    }
+
+    private static void openSystemFolder(EmulatorHarness app, int index,
+            String title) throws Exception
+    {
+        List folders = awaitFoldersList(app, RPC_MS);
+        if (folders.size() <= index) { throw new Exception("system folder missing"); }
+        folders.setSelectedIndex(index, true);
+        press(app, "Open");
+        awaitFolderCanvas(app, title, RPC_MS);
+    }
+
+    private static Canvas awaitFolderCanvas(EmulatorHarness app, String title,
+            int timeout) throws Exception
+    {
+        long until = System.currentTimeMillis() + timeout;
+        while (System.currentTimeMillis() < until)
+        {
+            Displayable current = app.current();
+            if (current instanceof Alert)
+            {
+                throw new Exception("folder list raised an alert");
+            }
+            if (current instanceof Canvas
+                    && EmulatorHarness.command(current, "Back") != null
+                    && EmulatorHarness.command(current, "Folders") == null
+                    && canvasContains((Canvas) current, title))
+            {
+                return (Canvas) current;
+            }
+            Thread.sleep(100);
+        }
+        throw new Exception("folder dialog screen did not appear");
+    }
+
+    private static void createFolderThroughUi(EmulatorHarness app, String name,
+            String title, String username, String target, Object categoryPeer,
+            boolean exercisePeerPicker) throws Exception
+    {
+        awaitFoldersList(app, RPC_MS);
+        press(app, "New folder");
+        Form editor = awaitForm(app, "New folder", 10000);
+        TextField nameField = folderNameField(editor);
+        nameField.setString(name);
+
+        boolean included = false;
+        if (exercisePeerPicker && target != null)
+        {
+            press(app, "Included chats");
+            List peers = awaitList(app, "Included chats", 10000);
+            if (EmulatorHarness.command(peers, "Add") == null)
+            {
+                throw new Exception("included-chat picker has no Add command");
+            }
+            included = addIncludedPeer(app, username, target);
+            if (!included && title != null
+                    && (username == null || !title.equals(username)))
+            {
+                included = addIncludedPeer(app, title, target);
+            }
+            if (included)
+            {
+                peers = awaitList(app, "Included chats", RPC_MS);
+                if (peers.size() < 1
+                        || EmulatorHarness.command(peers, "Remove") == null)
+                {
+                    throw new Exception("included chat was not added to editor");
+                }
+            }
+            press(app, "Back");
+            editor = awaitForm(app, "New folder", 10000);
+        }
+
+        if (!included)
+        {
+            selectCategoryForPeer(editor, categoryPeer);
+        }
+
+        // Both peer-list entry points are part of the editor contract.  The
+        // excluded list remains empty; changing it would affect the target we
+        // use to verify the opened custom folder.
+        press(app, "Excluded chats");
+        List excluded = awaitList(app, "Excluded chats", 10000);
+        if (EmulatorHarness.command(excluded, "Add") == null)
+        {
+            throw new Exception("excluded-chat picker has no Add command");
+        }
+        press(app, "Back");
+        awaitForm(app, "New folder", 10000);
+        press(app, "Save");
+        awaitFolderRow(app, name, true, RPC_MS);
+    }
+
+    private static boolean addIncludedPeer(EmulatorHarness app, String query,
+            String target) throws Exception
+    {
+        if (query == null || query.trim().length() < 2) { return false; }
+        press(app, "Add");
+        TextBox box = awaitTextBox(app, 10000);
+        String trimmed = query.trim();
+        if (trimmed.length() > 64) { trimmed = trimmed.substring(0, 64); }
+        box.setString(trimmed);
+        press(app, "Search");
+        List results = awaitList(app, "Results for", RPC_MS);
+        int found = searchPeerIndex(app, target);
+        if (found >= 0)
+        {
+            results.setSelectedIndex(found, true);
+            press(app, "Add");
+            awaitList(app, "Included chats", RPC_MS);
+            return true;
+        }
+        press(app, "Back");
+        awaitList(app, "Included chats", 10000);
+        return false;
+    }
+
+    private static void selectCategoryForPeer(Form editor, Object peer)
+            throws Exception
+    {
+        ChoiceGroup includes = null;
+        for (int i = 0; i < editor.size(); i++)
+        {
+            if (editor.get(i) instanceof ChoiceGroup
+                    && ((ChoiceGroup) editor.get(i)).size() == 5)
+            {
+                includes = (ChoiceGroup) editor.get(i);
+                break;
+            }
+        }
+        if (includes == null) { throw new Exception("folder include rules missing"); }
+        int kind = peerInt(peer, "kind");
+        int category;
+        if (peerBoolean(peer, "bot")) { category = 4; }
+        else if (kind == 1 || peerBoolean(peer, "megagroup")) { category = 2; }
+        else if (kind == 2 && peerBoolean(peer, "broadcast")) { category = 3; }
+        else if (kind == 2) { category = 2; }
+        else { category = peerBoolean(peer, "contact") ? 0 : 1; }
+        includes.setSelectedIndex(category, true);
+    }
+
+    private static TextField folderNameField(Form editor) throws Exception
+    {
+        for (int i = 0; i < editor.size(); i++)
+        {
+            if (editor.get(i) instanceof TextField)
+            {
+                return (TextField) editor.get(i);
+            }
+        }
+        throw new Exception("folder name field missing");
+    }
+
+    private static void renameFolderThroughUi(EmulatorHarness app,
+            String before, String after) throws Exception
+    {
+        List folders = awaitFoldersList(app, RPC_MS);
+        int at = folderRow(folders, before);
+        if (at < 2) { throw new Exception("created folder cannot be edited"); }
+        folders.setSelectedIndex(at, true);
+        press(app, "Edit");
+        Form editor = awaitForm(app, "Edit folder", 10000);
+        folderNameField(editor).setString(after);
+        press(app, "Save");
+        awaitFolderRow(app, after, true, RPC_MS);
+        awaitFolderRow(app, before, false, 10000);
+    }
+
+    private static void reorderFolderThroughUi(EmulatorHarness app,
+            String name) throws Exception
+    {
+        List folders = awaitFoldersList(app, RPC_MS);
+        int original = folderRow(folders, name);
+        if (original <= 2)
+        {
+            throw new Exception("second disposable folder cannot move up");
+        }
+        folders.setSelectedIndex(original, true);
+        press(app, "Move up");
+        awaitFolderIndex(app, name, original - 1, RPC_MS);
+        folders = awaitFoldersList(app, RPC_MS);
+        folders.setSelectedIndex(original - 1, true);
+        press(app, "Move down");
+        awaitFolderIndex(app, name, original, RPC_MS);
+    }
+
+    private static void openFolderByName(EmulatorHarness app, String name)
+            throws Exception
+    {
+        List folders = awaitFoldersList(app, RPC_MS);
+        int at = folderRow(folders, name);
+        if (at < 2) { throw new Exception("personal folder missing before open"); }
+        folders.setSelectedIndex(at, true);
+        press(app, "Open");
+        awaitFolderCanvas(app, name, RPC_MS);
+    }
+
+    private static void deleteFolderThroughUi(EmulatorHarness app, String name)
+            throws Exception
+    {
+        List folders = awaitFoldersList(app, RPC_MS);
+        int at = folderRow(folders, name);
+        if (at < 0) { return; }
+        folders.setSelectedIndex(at, true);
+        press(app, "Delete");
+        awaitAlert(app, "Delete folder", 10000);
+        press(app, "Delete");
+        awaitFolderRow(app, name, false, RPC_MS);
+    }
+
+    private static Alert awaitAlert(EmulatorHarness app, String title,
+            int timeout) throws Exception
+    {
+        long until = System.currentTimeMillis() + timeout;
+        while (System.currentTimeMillis() < until)
+        {
+            Displayable current = app.current();
+            if (current instanceof Alert)
+            {
+                String actual = EmulatorHarness.title(current);
+                if (actual != null && actual.indexOf(title) >= 0)
+                {
+                    return (Alert) current;
+                }
+            }
+            Thread.sleep(100);
+        }
+        throw new Exception("expected confirmation alert did not appear");
+    }
+
+    private static void awaitFolderRow(EmulatorHarness app, String name,
+            boolean present, int timeout) throws Exception
+    {
+        long until = System.currentTimeMillis() + timeout;
+        while (System.currentTimeMillis() < until)
+        {
+            Displayable current = app.current();
+            if (current instanceof Alert)
+            {
+                String alertTitle = EmulatorHarness.title(current);
+                if (!(!present && alertTitle != null
+                        && alertTitle.indexOf("Delete folder") >= 0))
+                {
+                    throw new Exception("folder operation raised an alert");
+                }
+            }
+            if (current instanceof List
+                    && "Folders".equals(EmulatorHarness.title(current)))
+            {
+                boolean found = folderRow((List) current, name) >= 0;
+                if (found == present) { return; }
+            }
+            Thread.sleep(100);
+        }
+        throw new Exception(present ? "saved folder did not appear"
+                : "deleted/renamed folder did not disappear");
+    }
+
+    private static void awaitFolderIndex(EmulatorHarness app, String name,
+            int wanted, int timeout) throws Exception
+    {
+        long until = System.currentTimeMillis() + timeout;
+        while (System.currentTimeMillis() < until)
+        {
+            Displayable current = app.current();
+            if (current instanceof Alert)
+            {
+                throw new Exception("folder reorder raised an alert");
+            }
+            if (current instanceof List
+                    && "Folders".equals(EmulatorHarness.title(current))
+                    && folderRow((List) current, name) == wanted) { return; }
+            Thread.sleep(100);
+        }
+        throw new Exception("folder order did not change");
+    }
+
+    private static int folderRow(List folders, String name)
+    {
+        if (folders == null || name == null) { return -1; }
+        for (int i = 0; i < folders.size(); i++)
+        {
+            if (name.equals(folders.getString(i))) { return i; }
+        }
+        return -1;
+    }
+
+    private static void cleanupStaleTestFolders(EmulatorHarness app)
+            throws Exception
+    {
+        for (int pass = 0; pass < 8; pass++)
+        {
+            List folders = awaitFoldersList(app, RPC_MS);
+            String stale = null;
+            for (int i = 2; i < folders.size(); i++)
+            {
+                String row = folders.getString(i);
+                if (isDisposableFolderName(row)) { stale = row; break; }
+            }
+            if (stale == null) { return; }
+            deleteFolderThroughUi(app, stale);
+        }
+        throw new Exception("too many stale disposable folders");
+    }
+
+    private static boolean isDisposableFolderName(String value)
+    {
+        if (value == null || value.length() != 9
+                || !(value.startsWith("E2EA")
+                || value.startsWith("E2EB")
+                || value.startsWith("E2ER"))) { return false; }
+        for (int i = 4; i < value.length(); i++)
+        {
+            char ch = value.charAt(i);
+            if (ch < '0' || ch > '9') { return false; }
+        }
+        return true;
+    }
+
+    private static void awaitPeerCommand(EmulatorHarness app, String token,
+            String command, int timeout) throws Exception
+    {
+        long until = System.currentTimeMillis() + timeout;
+        while (System.currentTimeMillis() < until)
+        {
+            Displayable current = app.current();
+            if (current instanceof Alert)
+            {
+                throw new Exception("chat management raised an alert");
+            }
+            if (current instanceof Canvas
+                    && selectPeer(app, (Canvas) current, token)
+                    && EmulatorHarness.command(current, command) != null)
+            {
+                return;
+            }
+            Thread.sleep(250);
+        }
+        throw new Exception("selected chat did not expose command " + command);
+    }
+
+    private static void awaitPeerAbsent(EmulatorHarness app, String token,
+            int timeout) throws Exception
+    {
+        long until = System.currentTimeMillis() + timeout;
+        while (System.currentTimeMillis() < until)
+        {
+            Displayable current = app.current();
+            if (current instanceof Alert)
+            {
+                throw new Exception("chat move raised an alert");
+            }
+            if (current instanceof Canvas
+                    && !canvasHasPeer((Canvas) current, token)) { return; }
+            Thread.sleep(250);
+        }
+        throw new Exception("moved chat remained in the current list");
+    }
+
+    private static boolean selectPeer(EmulatorHarness app, Canvas canvas,
+            String token) throws Exception
+    {
+        selectCanvasRow(app, 0);
+        int count = canvasDialogCount(canvas);
+        for (int i = 0; i < count; i++)
+        {
+            if (token.equals(peerToken(selectedPeer(canvas)))) { return true; }
+            if (i + 1 < count) { app.key(Canvas.KEY_NUM8); }
+        }
+        return false;
+    }
+
+    private static boolean canvasHasPeer(Canvas canvas, String token)
+            throws Exception
+    {
+        Object[] rows = canvasDialogs(canvas);
+        for (int i = 0; i < rows.length; i++)
+        {
+            Object peer = objectField(rows[i], "peer");
+            if (token.equals(peerToken(peer))) { return true; }
+        }
+        return false;
+    }
+
+    private static Object selectedPeer(Canvas canvas) throws Exception
+    {
+        Method method = canvas.getClass().getMethod("selectedPeer", new Class[0]);
+        return method.invoke(canvas, new Object[0]);
+    }
+
+    private static int canvasDialogCount(Canvas canvas) throws Exception
+    {
+        // dialogCount() is a test-facing convenience and ProGuard may shrink
+        // it from an exact device JAR.  The retained row array is what the
+        // Canvas itself paints, so it is the stronger packaged assertion too.
+        return canvasDialogs(canvas).length;
+    }
+
+    private static Object[] canvasDialogs(Canvas canvas) throws Exception
+    {
+        Object rows = field(canvas, "dialogs");
+        return rows instanceof Object[] ? (Object[]) rows : new Object[0];
+    }
+
+    private static int searchPeerIndex(EmulatorHarness app, String token)
+            throws Exception
+    {
+        Object peers = field(app.application(), "searchPeers");
+        if (!(peers instanceof Object[])) { return -1; }
+        Object[] rows = (Object[]) peers;
+        for (int i = 0; i < rows.length; i++)
+        {
+            if (token.equals(peerToken(rows[i]))) { return i; }
+        }
+        return -1;
+    }
+
+    private static Object field(Object owner, String name) throws Exception
+    {
+        Class type = owner == null ? null : owner.getClass();
+        while (type != null)
+        {
+            try
+            {
+                Field found = type.getDeclaredField(name);
+                found.setAccessible(true);
+                return found.get(owner);
+            }
+            catch (NoSuchFieldException missing) { type = type.getSuperclass(); }
+        }
+        throw new Exception("packaged field missing: " + name);
+    }
+
+    private static Object objectField(Object owner, String name) throws Exception
+    {
+        return owner == null ? null : field(owner, name);
+    }
+
+    private static String peerToken(Object peer) throws Exception
+    {
+        if (peer == null) { return ""; }
+        return peerInt(peer, "kind") + ":" + peerLong(peer, "id");
+    }
+
+    private static int peerInt(Object peer, String name) throws Exception
+    {
+        return ((Number) field(peer, name)).intValue();
+    }
+
+    private static long peerLong(Object peer, String name) throws Exception
+    {
+        return ((Number) field(peer, name)).longValue();
+    }
+
+    private static boolean peerBoolean(Object peer, String name) throws Exception
+    {
+        Object value = field(peer, name);
+        return value instanceof Boolean && ((Boolean) value).booleanValue();
+    }
+
+    private static String peerString(Object peer, String name) throws Exception
+    {
+        Object value = field(peer, name);
+        return value instanceof String ? (String) value : null;
+    }
+
+    private static void returnToMain(EmulatorHarness app) throws Exception
+    {
+        for (int i = 0; i < 12; i++)
+        {
+            Displayable current = app.current();
+            if (current instanceof Canvas
+                    && EmulatorHarness.command(current, "Folders") != null)
+            {
+                return;
+            }
+            if (current instanceof Alert)
+            {
+                if (EmulatorHarness.command(current, "Cancel") != null)
+                {
+                    press(app, "Cancel");
+                }
+                else if (EmulatorHarness.command(current, "Back") != null)
+                {
+                    press(app, "Back");
+                }
+                else
+                {
+                    Thread.sleep(1000);
+                }
+            }
+            else if (EmulatorHarness.command(current, "Back") != null)
+            {
+                press(app, "Back");
+            }
+            else
+            {
+                throw new Exception("cannot return to main dialogs from "
+                        + EmulatorHarness.describe(current));
+            }
+            Thread.sleep(250);
+        }
+        throw new Exception("could not unwind UI to main dialogs");
+    }
+
+    private static void cleanupFolder(EmulatorHarness app, String name)
+    {
+        try
+        {
+            if (name == null) { return; }
+            openFolders(app);
+            List folders = awaitFoldersList(app, RPC_MS);
+            if (folderRow(folders, name) >= 0)
+            {
+                deleteFolderThroughUi(app, name);
+            }
+            returnToMain(app);
+        }
+        catch (Throwable cleanup)
+        {
+            System.out.println("PACKAGED FOLDERS E2E CLEANUP FAIL: folder");
+        }
+    }
+
+    private static void cleanupArchivedPeer(EmulatorHarness app, String target,
+            boolean expectedDirty)
+    {
+        try
+        {
+            openFolders(app);
+            openSystemFolder(app, 1, "Archived");
+            Canvas archived = (Canvas) app.current();
+            if (selectPeer(app, archived, target))
+            {
+                if (EmulatorHarness.command(archived, "Unarchive") == null)
+                {
+                    throw new Exception("archived cleanup command missing");
+                }
+                press(app, "Unarchive");
+                awaitPeerAbsent(app, target, 15000);
+            }
+            else if (expectedDirty)
+            {
+                throw new Exception("dirty archived peer was not found");
+            }
+            returnToMain(app);
+        }
+        catch (Throwable cleanup)
+        {
+            System.out.println("PACKAGED FOLDERS E2E CLEANUP FAIL: archive");
+        }
+    }
+
+    private static void cleanupPinnedPeer(EmulatorHarness app, String target,
+            boolean expectedDirty)
+    {
+        try
+        {
+            returnToMain(app);
+            press(app, "Refresh");
+            Canvas main = awaitMainDialogs(app, RPC_MS);
+            if (selectPeer(app, main, target)
+                    && EmulatorHarness.command(main, "Unpin") != null)
+            {
+                press(app, "Unpin");
+                awaitPeerCommand(app, target, "Pin", RPC_MS);
+            }
+            else if (expectedDirty)
+            {
+                throw new Exception("dirty pinned peer was not found");
+            }
+        }
+        catch (Throwable cleanup)
+        {
+            System.out.println("PACKAGED FOLDERS E2E CLEANUP FAIL: pin");
+        }
     }
 
     private static boolean sender(EmulatorHarness app, File state)

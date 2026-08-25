@@ -1104,13 +1104,103 @@ public final class Telegram
         return parseDialogsReply(invoke(Requests.getDialogs(null, limit, hash)));
     }
 
+    /** First page of a peer folder: 0 main, 1 archive. */
+    public DialogPage getDialogsInFolder(int folderId, int limit)
+            throws IOException
+    {
+        DialogPage page = parseDialogsReply(invoke(
+                Requests.getDialogs(null, limit, 0, folderId)));
+        page.retainFolder(folderId);
+        return page;
+    }
+
     public DialogPage getDialogsAfter(Dialog offset, int limit)
             throws IOException
     {
         return parseDialogsReply(invoke(Requests.getDialogs(offset, limit)));
     }
 
-    private DialogPage parseDialogsReply(byte[] result) throws IOException
+    public DialogPage getDialogsAfter(int folderId, Dialog offset, int limit)
+            throws IOException
+    {
+        DialogPage page = parseDialogsReply(invoke(
+                Requests.getDialogs(offset, limit, 0, folderId)));
+        page.retainFolder(folderId);
+        return page;
+    }
+
+    /** Resolve sparse explicit members without scanning the account. */
+    public DialogPage getPeerDialogs(Peer[] wanted) throws IOException
+    {
+        return parseDialogsReply(invoke(Requests.getPeerDialogs(wanted)));
+    }
+
+    public boolean toggleDialogPin(Peer peer, boolean pinned)
+            throws IOException
+    {
+        requireTrue(invoke(Requests.toggleDialogPin(peer, pinned)),
+                "messages.toggleDialogPin");
+        return true;
+    }
+
+    /** Move one peer between main (0) and archive (1), then sync its Updates. */
+    public void editPeerFolder(Peer peer, int folderId) throws IOException
+    {
+        byte[] result = invoke(Requests.editPeerFolder(peer, folderId));
+        // The RPC result is an Updates envelope and belongs on the same ordered
+        // path as pushed updates; parsing it only in the UI would lose pts.
+        updates.accept(result);
+    }
+
+    public DialogFilterDefinition[] getDialogFilters() throws IOException
+    {
+        TlObj result = TlParser.parse(new TlReader(
+                invoke(Requests.getDialogFilters())));
+        if (result == null || result.id != Api.MESSAGES_DIALOG_FILTERS)
+        {
+            throw new IOException("unexpected reply to messages.getDialogFilters: "
+                    + describe(result));
+        }
+        TlObj[] raw = result.vec(Api.F_MESSAGES_DIALOG_FILTERS__FILTERS);
+        DialogFilterDefinition[] out = new DialogFilterDefinition[raw.length];
+        int count = 0;
+        for (int i = 0; i < raw.length; i++)
+        {
+            DialogFilterDefinition filter =
+                    DialogFilterDefinition.from(raw[i], peers);
+            if (filter != null) { out[count++] = filter; }
+        }
+        if (count == out.length) { return out; }
+        DialogFilterDefinition[] exact = new DialogFilterDefinition[count];
+        System.arraycopy(out, 0, exact, 0, count);
+        return exact;
+    }
+
+    public boolean updateDialogFilter(DialogFilterDefinition filter)
+            throws IOException
+    {
+        if (filter == null) { throw new IllegalArgumentException("filter"); }
+        requireTrue(invoke(Requests.updateDialogFilter(filter.id, filter)),
+                "messages.updateDialogFilter");
+        return true;
+    }
+
+    public boolean deleteDialogFilter(int id) throws IOException
+    {
+        requireTrue(invoke(Requests.updateDialogFilter(id, null)),
+                "messages.updateDialogFilter(delete)");
+        return true;
+    }
+
+    public boolean updateDialogFiltersOrder(int[] order) throws IOException
+    {
+        requireTrue(invoke(Requests.updateDialogFiltersOrder(order)),
+                "messages.updateDialogFiltersOrder");
+        return true;
+    }
+
+    private DialogPage parseDialogsReply(byte[] result)
+            throws IOException
     {
         TlObj res = TlParser.parse(new TlReader(result));
         if (res == null)
@@ -1154,6 +1244,15 @@ public final class Telegram
             page.notModified = true;
             return page;
         }
+        else if (res.id == Api.MESSAGES_PEER_DIALOGS)
+        {
+            dialogs = res.vec(Api.F_MESSAGES_PEER_DIALOGS__DIALOGS);
+            messages = res.vec(Api.F_MESSAGES_PEER_DIALOGS__MESSAGES);
+            chats = res.vec(Api.F_MESSAGES_PEER_DIALOGS__CHATS);
+            users = res.vec(Api.F_MESSAGES_PEER_DIALOGS__USERS);
+            page.complete = true;
+            page.total = dialogs == null ? 0 : dialogs.length;
+        }
         else
         {
             throw new IOException("unexpected reply to messages.getDialogs: "
@@ -1181,10 +1280,19 @@ public final class Telegram
             entry.peer = peers.resolve(reference);
             entry.topMessageId = d.intAt(Api.F_DIALOG__TOP_MESSAGE);
             entry.unreadCount = d.intAt(Api.F_DIALOG__UNREAD_COUNT);
+            entry.unreadMark = d.num(Api.F_DIALOG__UNREAD_MARK) != 0;
             entry.pinned = d.num(Api.F_DIALOG__PINNED) != 0;
             entry.readInboxMaxId = d.intAt(Api.F_DIALOG__READ_INBOX_MAX_ID);
             entry.readOutboxMaxId = d.intAt(Api.F_DIALOG__READ_OUTBOX_MAX_ID);
             entry.channelPts = d.flag(0) ? d.intAt(Api.F_DIALOG__PTS) : -1;
+            // Missing folder_id is the protocol representation of the main
+            // peer folder.  It must not inherit a folder_id from the request:
+            // Telegram can prefix a folder-aware reply with pinned rows from
+            // another list, and doing so mislabeled main pins as archived.
+            entry.folderId = d.flag(4) ? d.intAt(Api.F_DIALOG__FOLDER_ID) : 0;
+            TlObj notify = d.obj(Api.F_DIALOG__NOTIFY_SETTINGS);
+            entry.muteUntil = notify == null ? 0
+                    : notify.intAt(Api.F_PEER_NOTIFY_SETTINGS__MUTE_UNTIL);
 
             Message last = findMessage(messages, entry.topMessageId, reference);
             if (last != null)

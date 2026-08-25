@@ -21,6 +21,11 @@ public class DialogListScreen extends Canvas
         void onDialogViewportChanged();
     }
 
+    public interface SelectionListener
+    {
+        void onDialogSelectionChanged(Dialog dialog);
+    }
+
     private final Font titleFont = Font.getFont(Font.FACE_PROPORTIONAL,
             Font.STYLE_BOLD, Font.SIZE_SMALL);
     private final Font font = Font.getFont(Font.FACE_PROPORTIONAL,
@@ -39,8 +44,10 @@ public class DialogListScreen extends Canvas
     private String connection = "";
     private String updates = "";
     private String emptyText = "(no chats)";
+    private String title = "Chats";
     private ActivationListener activationListener;
     private ViewportListener viewportListener;
+    private SelectionListener selectionListener;
     private AvatarCache avatarCache;
     private final TouchGesture touch = new TouchGesture();
     private TouchContextListener touchContextListener;
@@ -67,6 +74,17 @@ public class DialogListScreen extends Canvas
     public void setViewportListener(ViewportListener value)
     {
         viewportListener = value;
+    }
+
+    public void setSelectionListener(SelectionListener value)
+    {
+        selectionListener = value;
+    }
+
+    public void setTitle(String value)
+    {
+        title = value == null || value.length() == 0 ? "Chats" : value;
+        repaint();
     }
 
     public void setTouchContextListener(TouchContextListener value)
@@ -128,6 +146,7 @@ public class DialogListScreen extends Canvas
         ensureVisible();
         repaint();
         viewportChanged();
+        selectionChanged();
     }
 
     public void setStatus(String connection, String updates)
@@ -146,6 +165,12 @@ public class DialogListScreen extends Canvas
     {
         return selected >= 0 && selected < dialogs.length
                 && dialogs[selected] != null ? dialogs[selected].peer : null;
+    }
+
+    public Dialog selectedDialog()
+    {
+        return selected >= 0 && selected < dialogs.length
+                ? dialogs[selected] : null;
     }
 
     public int selectedIndex() { return selected; }
@@ -255,7 +280,7 @@ public class DialogListScreen extends Canvas
         String state = connection;
         if (updates.length() > 0) { state += "/" + updates; }
         UiChrome.header(g, theme, metrics, titleFont,
-                "Chats " + count, state);
+                title + " " + count, state);
 
         int visible = metrics.visibleRows();
         if (!touch.isDragging()) { ensureVisible(); }
@@ -492,6 +517,7 @@ public class DialogListScreen extends Canvas
         ensureVisible();
         repaint();
         viewportChanged();
+        selectionChanged();
         return true;
     }
 
@@ -514,6 +540,7 @@ public class DialogListScreen extends Canvas
         ensureVisible();
         repaint();
         viewportChanged();
+        selectionChanged();
     }
 
     private void ensureVisible()
@@ -555,5 +582,11 @@ public class DialogListScreen extends Canvas
     {
         ViewportListener listener = viewportListener;
         if (listener != null) { listener.onDialogViewportChanged(); }
+    }
+
+    private void selectionChanged()
+    {
+        SelectionListener listener = selectionListener;
+        if (listener != null) { listener.onDialogSelectionChanged(selectedDialog()); }
     }
 }

@@ -60,11 +60,13 @@ public final class RmsConversationCache implements AccountStore
      * stored a flattened preview without entities, so a spoiler cached by an
      * older build cannot be identified and concealed on upgrade. Those dialog
      * records are deliberately discarded and fetched again. The payload shape
-     * otherwise remains v2, including the peer's forum flag.
+     * otherwise remains v2, including the peer's forum flag. Dialog v4 adds
+     * folder/filter classification; archive/custom contents are still not
+     * cached, but the main snapshot must not change category while offline.
      */
     private static final int DIALOG_MAGIC = 0x54474434;
     private static final int HISTORY_MAGIC = 0x54474834;
-    private static final int DIALOG_VERSION = 3;
+    private static final int DIALOG_VERSION = 4;
     private static final int HISTORY_VERSION = 5;
     private static final int MAX_CACHED_DIALOGS = 80;
     private static final int MAX_CACHED_MESSAGES = 30;
@@ -119,7 +121,7 @@ public final class RmsConversationCache implements AccountStore
                     Dialog[] out = new Dialog[count];
                     for (int i = 0; i < count; i++)
                     {
-                        out[i] = readDialog(r, envelope.version >= 2);
+                        out[i] = readDialog(r, envelope.version);
                     }
                     if (id > bestId)
                     {
@@ -294,13 +296,20 @@ public final class RmsConversationCache implements AccountStore
         w.writeString(text(d.lastMessage));
         w.writeInt(d.date);
         w.writeInt(d.lastMessageOutgoing ? 1 : 0);
+        w.writeInt((d.unreadMark ? 1 : 0)
+                | (d.peer != null && d.peer.contact ? 2 : 0)
+                | (d.peer != null && d.peer.bot ? 4 : 0)
+                | (d.peer != null && d.peer.broadcast ? 8 : 0)
+                | (d.peer != null && d.peer.megagroup ? 16 : 0));
+        w.writeInt(d.folderId);
+        w.writeInt(d.muteUntil);
     }
 
-    private static Dialog readDialog(TlReader r, boolean extended)
+    private static Dialog readDialog(TlReader r, int version)
             throws IOException
     {
         Dialog d = new Dialog();
-        d.peer = readPeer(r, extended);
+        d.peer = readPeer(r, version >= 2);
         d.topMessageId = r.readInt();
         d.unreadCount = r.readInt();
         d.pinned = r.readInt() != 0;
@@ -310,6 +319,20 @@ public final class RmsConversationCache implements AccountStore
         d.lastMessage = r.readString();
         d.date = r.readInt();
         d.lastMessageOutgoing = r.readInt() != 0;
+        if (version >= 4)
+        {
+            int flags = r.readInt();
+            d.unreadMark = (flags & 1) != 0;
+            if (d.peer != null)
+            {
+                d.peer.contact = (flags & 2) != 0;
+                d.peer.bot = (flags & 4) != 0;
+                d.peer.broadcast = (flags & 8) != 0;
+                d.peer.megagroup = (flags & 16) != 0;
+            }
+            d.folderId = r.readInt();
+            d.muteUntil = r.readInt();
+        }
         return d;
     }
 

@@ -150,7 +150,7 @@ param(
     [ValidateSet('probe', 'route', 'login', 'session', 'photos', 'minheap',
                  'scroll', 'chats', 'hashprobe', 'navigate', 'formatting',
                  'forumspoiler', 'rc-identity',
-                 'rc-sender', 'rc-receiver', 'rc-cleanup',
+                 'rc-sender', 'rc-receiver', 'rc-cleanup', 'rc-folders',
                  'rc-poll-client')]
     [string]$Scenario = 'probe',
     [string]$Mode = 'Auto',
@@ -306,6 +306,7 @@ switch ($Scenario) {
     'rc-sender'   { $driverArgs = @('sender', $StateDir, $Role) }
     'rc-receiver' { $driverArgs = @('receiver', $StateDir, $Role) }
     'rc-cleanup'  { $driverArgs = @('cleanup', $StateDir, $Role) }
+    'rc-folders'  { $driverArgs = @('folders', $StateDir, $Role) }
     'rc-poll-client' { $driverArgs = @('poll-client', $StateDir, $Role) }
 }
 

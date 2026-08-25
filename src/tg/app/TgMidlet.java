@@ -5,6 +5,7 @@ import javax.microedition.lcdui.AlertType;
 import javax.microedition.lcdui.Canvas;
 import javax.microedition.lcdui.Command;
 import javax.microedition.lcdui.CommandListener;
+import javax.microedition.lcdui.ChoiceGroup;
 import javax.microedition.lcdui.Display;
 import javax.microedition.lcdui.Displayable;
 import javax.microedition.lcdui.Form;
@@ -19,6 +20,10 @@ import tg.api.AuthCheck;
 import tg.api.Cached;
 import tg.api.Dialog;
 import tg.api.DialogPage;
+import tg.api.DialogFilterDefinition;
+import tg.api.DialogFolderMatcher;
+import tg.api.DialogListState;
+import tg.api.FolderScanCursor;
 import tg.api.DiscussionInfo;
 import tg.api.AppSettings;
 import tg.api.ForumTopic;
@@ -195,7 +200,28 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     private final Command cmdOpenTopic = new Command("Open", Command.ITEM, 1);
     private final Command cmdMoreTopics = new Command("More", Command.SCREEN, 4);
     private final Command cmdFilter =
-            new Command("Filter loaded", Command.SCREEN, 3);
+            new Command("Filter current list", Command.SCREEN, 3);
+    private final Command cmdFolders = new Command("Folders", Command.SCREEN, 3);
+    private final Command cmdPin = new Command("Pin", Command.SCREEN, 2);
+    private final Command cmdUnpin = new Command("Unpin", Command.SCREEN, 2);
+    private final Command cmdArchive = new Command("Archive", Command.SCREEN, 3);
+    private final Command cmdUnarchive = new Command("Unarchive", Command.SCREEN, 3);
+    private final Command cmdOpenFolder = new Command("Open", Command.ITEM, 1);
+    private final Command cmdNewFolder = new Command("New folder", Command.SCREEN, 2);
+    private final Command cmdEditFolder = new Command("Edit", Command.SCREEN, 2);
+    private final Command cmdFolderUp = new Command("Move up", Command.SCREEN, 3);
+    private final Command cmdFolderDown = new Command("Move down", Command.SCREEN, 4);
+    private final Command cmdDeleteFolder = new Command("Delete", Command.SCREEN, 5);
+    private final Command cmdConfirmDeleteFolder =
+            new Command("Delete", Command.SCREEN, 1);
+    private final Command cmdSaveFolder = new Command("Save", Command.SCREEN, 1);
+    private final Command cmdIncludedChats =
+            new Command("Included chats", Command.SCREEN, 2);
+    private final Command cmdExcludedChats =
+            new Command("Excluded chats", Command.SCREEN, 3);
+    private final Command cmdAddFolderPeer = new Command("Add", Command.SCREEN, 1);
+    private final Command cmdRemoveFolderPeer =
+            new Command("Remove", Command.SCREEN, 2);
     private final Command cmdTopOfList =
             new Command("Top of list", Command.SCREEN, 2);
     private final Command cmdFindChat =
@@ -331,6 +357,26 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     private Dialog[] visibleDialogs = new Dialog[0];
     private TextBox filterBox;
     private String dialogFilter = "";
+    private List foldersList;
+    private DialogFilterDefinition[] folderDefinitions =
+            new DialogFilterDefinition[0];
+    /** Rows after the two fixed Folders entries, excluding DialogFilterDefault. */
+    private DialogFilterDefinition[] folderRows =
+            new DialogFilterDefinition[0];
+    private DialogListScreen folderDialogScreen;
+    private DialogListState folderDialogState;
+    private Form folderEditor;
+    private TextField folderName;
+    private ChoiceGroup folderIncludes;
+    private ChoiceGroup folderExcludes;
+    private DialogFilterDefinition editingFolder;
+    private List folderPeerList;
+    /** 1 edits include_peers, 2 edits exclude_peers. */
+    private int folderPeerListMode;
+    /** Non-zero while contacts.search is selecting a folder member. */
+    private int folderPeerPickMode;
+    private Alert deleteFolderConfirm;
+    private DialogFilterDefinition pendingDeleteFolder;
     private ChatScreen chatScreen;
     private ChatScreen editCommandScreen;
     private boolean editCommandVisible;
@@ -978,7 +1024,8 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
 
     private void restoreScreen(Displayable screen)
     {
-        if (screen == dialogList)
+        if (screen == dialogList || screen == folderDialogScreen
+                || screen == foldersList)
         {
             // Landing on the chat list is the navigation reset: there is no
             // conversation any more, so there is nothing a composer could still
@@ -1098,6 +1145,11 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             changeNumber();
         }
+        else if (c == cmdOpenFolder
+                || (c == List.SELECT_COMMAND && d == foldersList))
+        {
+            openSelectedFolder();
+        }
         else if (c == cmdOpen)
         {
             openSelectedDialog();
@@ -1118,7 +1170,15 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         }
         else if (c == cmdRefresh)
         {
-            if (d == chatScreen)
+            if (d == foldersList)
+            {
+                loadFolders(true);
+            }
+            else if (d == folderDialogScreen)
+            {
+                reloadFolderDialogs();
+            }
+            else if (d == chatScreen)
             {
                 loadOpenHistory(openPeer);
             }
@@ -1166,7 +1226,8 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         }
         else if (c == cmdMoreDialogs)
         {
-            loadMoreDialogs(true);
+            if (d == folderDialogScreen) { loadMoreFolderDialogs(true); }
+            else { loadMoreDialogs(true); }
         }
         else if (c == cmdTopOfList)
         {
@@ -1202,7 +1263,70 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         }
         else if (c == cmdFindChat)
         {
+            folderPeerPickMode = 0;
             showSearchBox(d == forwardList);
+        }
+        else if (c == cmdFolders)
+        {
+            showFolders();
+        }
+        else if (c == cmdPin || c == cmdUnpin)
+        {
+            setSelectedDialogPinned(c == cmdPin);
+        }
+        else if (c == cmdArchive || c == cmdUnarchive)
+        {
+            setSelectedDialogArchived(c == cmdArchive);
+        }
+        else if (c == cmdNewFolder)
+        {
+            editFolder(null);
+        }
+        else if (c == cmdEditFolder)
+        {
+            editSelectedFolder();
+        }
+        else if (c == cmdFolderUp || c == cmdFolderDown)
+        {
+            moveSelectedFolder(c == cmdFolderUp ? -1 : 1);
+        }
+        else if (c == cmdDeleteFolder)
+        {
+            confirmDeleteSelectedFolder();
+        }
+        else if (c == cmdConfirmDeleteFolder && d == deleteFolderConfirm)
+        {
+            deleteSelectedFolder();
+        }
+        else if (c == cmdTouchCancel && d == deleteFolderConfirm)
+        {
+            deleteFolderConfirm = null;
+            pendingDeleteFolder = null;
+            if (foldersList != null) { display.setCurrent(foldersList); }
+        }
+        else if (c == cmdSaveFolder && d == folderEditor)
+        {
+            saveFolderEditor();
+        }
+        else if (c == cmdIncludedChats && d == folderEditor)
+        {
+            showFolderPeerList(1);
+        }
+        else if (c == cmdExcludedChats && d == folderEditor)
+        {
+            showFolderPeerList(2);
+        }
+        else if (c == cmdAddFolderPeer && d == folderPeerList)
+        {
+            showFolderPeerSearch(folderPeerListMode);
+        }
+        else if (c == cmdRemoveFolderPeer && d == folderPeerList)
+        {
+            removeSelectedFolderPeer();
+        }
+        else if (c == cmdAddFolderPeer && d == searchResults)
+        {
+            addSelectedSearchPeerToFolder();
         }
         else if (c == cmdFindMessages && d == chatScreen)
         {
@@ -1266,10 +1390,11 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         }
         else if (c == cmdProfile)
         {
-            if (d == dialogList)
+            if (d == dialogList || d == folderDialogScreen)
             {
-                Peer selected = dialogList.selectedPeer();
-                if (selected != null) { showProfile(selected, dialogList); }
+                DialogListScreen source = (DialogListScreen) d;
+                Peer selected = source.selectedPeer();
+                if (selected != null) { showProfile(selected, source); }
             }
             else { showContextProfile(); }
         }
@@ -1442,13 +1567,27 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         int count = 0;
         String title = "Options";
 
-        if (source == dialogList)
+        if (source == dialogList || source == folderDialogScreen)
         {
             title = "Chat options";
             actions[count++] = cmdOpen;
+            Dialog selected = ((DialogListScreen) source).selectedDialog();
+            boolean customShared = source == folderDialogScreen
+                    && folderDialogState != null
+                    && folderDialogState.kind == DialogListState.CUSTOM
+                    && folderDialogState.filter != null
+                    && !folderDialogState.filter.editable();
+            if (selected != null && !customShared)
+            {
+                actions[count++] = selected.pinned ? cmdUnpin : cmdPin;
+            }
+            if (selected != null)
+            {
+                actions[count++] = selected.folderId == 1
+                        ? cmdUnarchive : cmdArchive;
+            }
             actions[count++] = cmdProfile;
             actions[count++] = cmdFindChat;
-            actions[count++] = cmdFilter;
             actions[count++] = cmdBack;
         }
         else if (source == topicScreen)
@@ -2210,6 +2349,21 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         dialogList = null;
         dialogFilter = "";
         filterBox = null;
+        foldersList = null;
+        folderDefinitions = new DialogFilterDefinition[0];
+        folderRows = new DialogFilterDefinition[0];
+        folderDialogScreen = null;
+        folderDialogState = null;
+        folderEditor = null;
+        folderName = null;
+        folderIncludes = null;
+        folderExcludes = null;
+        editingFolder = null;
+        folderPeerList = null;
+        folderPeerListMode = 0;
+        folderPeerPickMode = 0;
+        deleteFolderConfirm = null;
+        pendingDeleteFolder = null;
 
         chatScreen = null;
         openHistory = new Message[0];
@@ -2532,6 +2686,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             dialogList.addCommand(cmdTopOfList);
             dialogList.addCommand(cmdFindChat);
             dialogList.addCommand(cmdFilter);
+            dialogList.addCommand(cmdFolders);
             dialogList.addCommand(cmdSaved);
             dialogList.addCommand(cmdMyProfile);
             dialogList.addCommand(cmdDiag);
@@ -2551,6 +2706,14 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             {
                 public void onDialogActivated(Peer peer) { openDialog(peer); }
             });
+            dialogList.setSelectionListener(
+                    new DialogListScreen.SelectionListener()
+            {
+                public void onDialogSelectionChanged(Dialog value)
+                {
+                    updateDialogActionCommands(dialogList, value, false);
+                }
+            });
             dialogList.setAvatarCache(avatarCache);
             dialogList.setViewportListener(
                     new DialogListScreen.ViewportListener()
@@ -2565,6 +2728,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         dialogList.removeCommand(cmdClearFilter);
         if (dialogFilter.length() > 0) { dialogList.addCommand(cmdClearFilter); }
         dialogList.setTheme(currentTheme());
+        dialogList.setTitle("Chats");
         dialogList.setStatus(connectionLabel, updateLabel);
         // "No matches" on its own reads as "you are not in a chat by that
         // name", and the filter only ever saw the loaded window. Until PR-016
@@ -2581,8 +2745,15 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 dialogFilter.length() == 0 ? dialogsAbove : 0,
                 Math.max(dialogTotal, dialogsAbove + dialogs.length),
                 selectedPeer);
+        updateDialogActionCommands(dialogList, dialogList.selectedDialog(), false);
         if (navigation.root() != dialogList) { resetRoot(dialogList); }
-        else { restoreScreen(dialogList); }
+        else if (navigation.current() == dialogList)
+        {
+            // A dialog refresh may finish after the reader has opened a chat,
+            // Folders, or a folder list.  Refresh the root model in place, but
+            // do not yank the current ScreenStack entry back to Chats.
+            restoreScreen(dialogList);
+        }
         loadVisibleAvatars();
         maybeLoadDialogs();
     }
@@ -2716,7 +2887,10 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             // ask Telegram, so "no chat by that name" is a claim it can make.
             searchResults.append("(Telegram found no chat by that name)", null);
         }
-        searchResults.addCommand(forForward ? cmdForwardToResult : cmdOpenResult);
+        Command resultAction = folderPeerPickMode != 0 ? cmdAddFolderPeer
+                : (forForward ? cmdForwardToResult : cmdOpenResult);
+        searchResults.addCommand(resultAction);
+        searchResults.setSelectCommand(resultAction);
         searchResults.addCommand(cmdBack);
         searchResults.setCommandListener(this);
         // Replaces the query box rather than stacking on it: Back from the
@@ -2971,8 +3145,10 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     /** Load only avatars that can currently become visible. */
     private void loadVisibleAvatars()
     {
-        if (dialogList == null || avatarWorker.isBusy()
-                || navigation.current() != dialogList)
+        final DialogListScreen avatarScreen = navigation.current() == folderDialogScreen
+                ? folderDialogScreen : dialogList;
+        if (avatarScreen == null || avatarWorker.isBusy()
+                || navigation.current() != avatarScreen)
         {
             return;
         }
@@ -3011,7 +3187,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             avatarsPaused = false;
             Diag.info("avatars resumed");
         }
-        Peer[] candidates = dialogList.visiblePeers();
+        Peer[] candidates = avatarScreen.visiblePeers();
         for (int i = 0; i < candidates.length; i++)
         {
             final Peer peer = candidates[i];
@@ -3027,7 +3203,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             // generation is, so the two are now one.
             final AsyncScope.Token asked = scope.capture(peer, 0);
             final long photoId = peer.avatar.photoId;
-            final int target = Math.max(8, dialogList.avatarSize());
+            final int target = Math.max(8, avatarScreen.avatarSize());
             boolean submitted = avatarWorker.submit(new Worker.Task()
             {
                 public String name() { return "dialog avatar"; }
@@ -3091,9 +3267,9 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                             && loaded.peer.avatar.photoId == loaded.photoId)
                     {
                         avatarCache.put(loaded.peer, loaded.image);
-                        if (dialogList != null)
+                        if (avatarScreen != null)
                         {
-                            dialogList.avatarsChanged();
+                            avatarScreen.avatarsChanged();
                         }
                         loadVisibleAvatars();
                     }
@@ -3144,9 +3320,9 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                     if (asked.sameSession())
                     {
                         avatarCache.fail(peer);
-                        if (dialogList != null)
+                        if (avatarScreen != null)
                         {
-                            dialogList.avatarsChanged();
+                            avatarScreen.avatarsChanged();
                         }
                         Diag.warn("avatar " + peer.key() + ": "
                                 + shortMessage(error));
@@ -3289,7 +3465,35 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
      */
     private Peer selectedDialogPeer()
     {
+        if (folderDialogScreen != null
+                && navigation.current() == folderDialogScreen)
+        {
+            return folderDialogScreen.selectedPeer();
+        }
         return dialogList == null ? null : dialogList.selectedPeer();
+    }
+
+    private Dialog selectedDialogRow()
+    {
+        if (folderDialogScreen != null
+                && navigation.current() == folderDialogScreen)
+        {
+            return folderDialogScreen.selectedDialog();
+        }
+        return dialogList == null ? null : dialogList.selectedDialog();
+    }
+
+    private void updateDialogActionCommands(DialogListScreen screen,
+            Dialog selected, boolean shared)
+    {
+        if (screen == null) { return; }
+        screen.removeCommand(cmdPin);
+        screen.removeCommand(cmdUnpin);
+        screen.removeCommand(cmdArchive);
+        screen.removeCommand(cmdUnarchive);
+        if (selected == null) { return; }
+        if (!shared) { screen.addCommand(selected.pinned ? cmdUnpin : cmdPin); }
+        screen.addCommand(selected.folderId == 1 ? cmdUnarchive : cmdArchive);
     }
 
     private static Dialog[] filterDialogs(Dialog[] source, String filter)
@@ -3309,7 +3513,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
 
     private void showDialogFilter()
     {
-        filterBox = new TextBox("Filter loaded chats", dialogFilter, 64,
+        filterBox = new TextBox("Filter current list", dialogFilter, 64,
                 TextField.ANY);
         filterBox.addCommand(cmdApplyFilter);
         filterBox.addCommand(cmdClearFilter);
@@ -3323,6 +3527,1084 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         dialogFilter = filterBox.getString().trim();
         if (navigation.current() == filterBox) { navigation.pop(); }
         showDialogList();
+    }
+
+    // ------------------------------------------------------------- folders
+
+    private static final class FolderLoadResult
+    {
+        Dialog[] dialogs = new Dialog[0];
+        Dialog mainOffset;
+        Dialog archiveOffset;
+        boolean mainExhausted;
+        boolean archiveExhausted;
+        int scanned;
+        int total;
+        boolean totalKnown;
+    }
+
+    private void showFolders()
+    {
+        foldersList = buildFoldersList();
+        pushScreen(foldersList);
+        loadFolders(false);
+    }
+
+    private List buildFoldersList()
+    {
+        List list = new List("Folders", List.IMPLICIT);
+        list.append("All chats", null);
+        list.append("Archived", null);
+        for (int i = 0; i < folderRows.length; i++)
+        {
+            DialogFilterDefinition filter = folderRows[i];
+            String title = filter == null ? "Folder" : filter.title;
+            if (filter != null && !filter.editable()) { title += " [shared]"; }
+            list.append(title, null);
+        }
+        list.addCommand(cmdOpenFolder);
+        list.addCommand(cmdNewFolder);
+        list.addCommand(cmdEditFolder);
+        list.addCommand(cmdFolderUp);
+        list.addCommand(cmdFolderDown);
+        list.addCommand(cmdDeleteFolder);
+        list.addCommand(cmdRefresh);
+        list.addCommand(cmdBack);
+        list.setCommandListener(this);
+        return list;
+    }
+
+    private void loadFolders(final boolean explicit)
+    {
+        final List old = foldersList;
+        final AsyncScope.Token asked = scope.capture();
+        boolean submitted = worker.submit(new Worker.Task()
+        {
+            public String name() { return "messages.getDialogFilters"; }
+            public Object run() throws Exception
+            {
+                return telegram.getDialogFilters();
+            }
+        }, new Worker.Callback()
+        {
+            public void onSuccess(Object result)
+            {
+                if (!asked.sameSession())
+                {
+                    dropStale("messages.getDialogFilters");
+                    return;
+                }
+                folderDefinitions = (DialogFilterDefinition[]) result;
+                int count = 0;
+                for (int i = 0; i < folderDefinitions.length; i++)
+                {
+                    if (folderDefinitions[i] != null
+                            && folderDefinitions[i].kind
+                            != DialogFilterDefinition.DEFAULT) { count++; }
+                }
+                folderRows = new DialogFilterDefinition[count];
+                int at = 0;
+                for (int i = 0; i < folderDefinitions.length; i++)
+                {
+                    DialogFilterDefinition filter = folderDefinitions[i];
+                    if (filter != null
+                            && filter.kind != DialogFilterDefinition.DEFAULT)
+                    {
+                        folderRows[at++] = filter;
+                    }
+                }
+                DialogFilterDefinition current = null;
+                if (folderDialogState != null
+                        && folderDialogState.kind == DialogListState.CUSTOM
+                        && folderDialogState.filter != null)
+                {
+                    int wanted = folderDialogState.filter.id;
+                    for (int i = 0; i < folderDefinitions.length; i++)
+                    {
+                        if (folderDefinitions[i] != null
+                                && folderDefinitions[i].id == wanted)
+                        {
+                            current = folderDefinitions[i];
+                            break;
+                        }
+                    }
+                }
+                List fresh = buildFoldersList();
+                foldersList = fresh;
+                if (folderDialogState != null
+                        && folderDialogState.kind == DialogListState.CUSTOM
+                        && current == null && navigation.current() == folderDialogScreen)
+                {
+                    folderDialogState = null;
+                    folderDialogScreen = null;
+                    restoreScreen(navigation.pop());
+                    if (navigation.current() == old) { replaceScreen(fresh); }
+                    showAlert("This folder was removed on another device.",
+                            AlertType.INFO, foldersList);
+                }
+                else
+                {
+                    if (current != null && folderDialogState != null)
+                    {
+                        folderDialogState.filter = current;
+                        folderDialogState.title = current.title;
+                        if (folderDialogScreen != null)
+                        {
+                            folderDialogScreen.setTitle(current.title);
+                        }
+                    }
+                    if (navigation.current() == old) { replaceScreen(fresh); }
+                    if (current != null && navigation.current() == folderDialogScreen)
+                    {
+                        reloadFolderDialogs();
+                    }
+                }
+            }
+
+            public void onFailure(Throwable error)
+            {
+                if (!asked.sameSession())
+                {
+                    dropStale("messages.getDialogFilters");
+                    return;
+                }
+                if (explicit || folderRows.length == 0)
+                {
+                    showAlertThen("Could not load folders", error,
+                            old == null ? (Displayable) dialogList
+                                    : (Displayable) old);
+                }
+            }
+        });
+        if (!submitted)
+        {
+            if (explicit || old != null)
+            {
+                showRefused("Folders not refreshed",
+                        "Another operation is still running. Try again.",
+                        old == null ? display.getCurrent() : old);
+            }
+        }
+    }
+
+    private DialogFilterDefinition selectedFolder()
+    {
+        if (foldersList == null) { return null; }
+        int index = foldersList.getSelectedIndex() - 2;
+        return index >= 0 && index < folderRows.length ? folderRows[index] : null;
+    }
+
+    private void openSelectedFolder()
+    {
+        if (foldersList == null) { return; }
+        int index = foldersList.getSelectedIndex();
+        if (index == 0)
+        {
+            pushScreen(dialogList);
+            return;
+        }
+        folderDialogState = index == 1 ? DialogListState.archive()
+                : DialogListState.custom(selectedFolder());
+        if (folderDialogState.filter == null
+                && folderDialogState.kind == DialogListState.CUSTOM) { return; }
+        folderDialogScreen = createFolderDialogScreen();
+        pushScreen(folderDialogScreen);
+        reloadFolderDialogs();
+    }
+
+    private DialogListScreen createFolderDialogScreen()
+    {
+        final DialogListScreen screen = new DialogListScreen(currentTheme());
+        screen.setTitle(folderDialogState.title);
+        screen.addCommand(cmdOpen);
+        screen.addCommand(cmdRefresh);
+        screen.addCommand(cmdMoreDialogs);
+        screen.addCommand(cmdFindChat);
+        screen.addCommand(cmdProfile);
+        screen.addCommand(cmdBack);
+        screen.setCommandListener(this);
+        screen.setTouchContextListener(touchContextListener);
+        screen.setAvatarCache(avatarCache);
+        screen.setActivationListener(new DialogListScreen.ActivationListener()
+        {
+            public void onDialogActivated(Peer peer) { openDialog(peer); }
+        });
+        screen.setSelectionListener(new DialogListScreen.SelectionListener()
+        {
+            public void onDialogSelectionChanged(Dialog value)
+            {
+                boolean shared = folderDialogState != null
+                        && folderDialogState.kind == DialogListState.CUSTOM
+                        && folderDialogState.filter != null
+                        && !folderDialogState.filter.editable();
+                updateDialogActionCommands(screen, value, shared);
+            }
+        });
+        screen.setViewportListener(new DialogListScreen.ViewportListener()
+        {
+            public void onDialogViewportChanged()
+            {
+                loadVisibleAvatars();
+                maybeLoadFolderDialogs();
+            }
+        });
+        return screen;
+    }
+
+    private void reloadFolderDialogs()
+    {
+        if (folderDialogState == null || folderDialogScreen == null) { return; }
+        DialogFilterDefinition filter = folderDialogState.filter;
+        folderDialogState = filter == null ? DialogListState.archive()
+                : DialogListState.custom(filter);
+        folderDialogScreen.setTitle(folderDialogState.title);
+        folderDialogScreen.setDialogs(new Dialog[0], 0, 0, null);
+        folderDialogScreen.setEmptyText("Loading...");
+        loadMoreFolderDialogs(false);
+    }
+
+    private void showFolderDialogs(Peer selected)
+    {
+        if (folderDialogState == null || folderDialogScreen == null) { return; }
+        DialogListState state = folderDialogState;
+        for (int i = 0; i < state.dialogs.length; i++)
+        {
+            localReads.apply(state.dialogs[i]);
+        }
+        folderDialogScreen.setTheme(currentTheme());
+        folderDialogScreen.setTitle(state.title);
+        folderDialogScreen.setEmptyText(state.exhausted
+                ? "(no chats in this folder)" : "Loading...");
+        if (state.kind == DialogListState.CUSTOM && !state.totalKnown)
+        {
+            int first = state.dialogs.length == 0 ? 0 : state.above + 1;
+            int last = state.above + state.dialogs.length;
+            folderDialogScreen.setWindowLabel(first + "-" + last + "/?");
+            folderDialogScreen.setStatus("scanned " + state.scanned + " chats",
+                    updateLabel);
+        }
+        else
+        {
+            int first = state.dialogs.length == 0 ? 0 : state.above + 1;
+            int last = state.above + state.dialogs.length;
+            int total = Math.max(state.total, last);
+            folderDialogScreen.setWindowLabel(state.dialogs.length == 0
+                    ? "0" : first + "-" + last + "/" + total);
+            folderDialogScreen.setStatus(connectionLabel, updateLabel);
+        }
+        folderDialogScreen.setDialogs(state.dialogs, state.above,
+                Math.max(state.total, state.above + state.dialogs.length), selected);
+        boolean shared = state.kind == DialogListState.CUSTOM
+                && state.filter != null && !state.filter.editable();
+        updateDialogActionCommands(folderDialogScreen,
+                folderDialogScreen.selectedDialog(), shared);
+        loadVisibleAvatars();
+    }
+
+    private void maybeLoadFolderDialogs()
+    {
+        if (folderDialogScreen == null || folderDialogState == null
+                || navigation.current() != folderDialogScreen
+                || folderDialogState.loading || folderDialogState.exhausted
+                || folderDialogState.dialogs.length == 0) { return; }
+        if (PageMerge.below(folderDialogState.dialogs,
+                folderDialogScreen.lastVisiblePeer())
+                < MemoryBudget.dialogPrefetchMargin())
+        {
+            loadMoreFolderDialogs(false);
+        }
+    }
+
+    private void loadMoreFolderDialogs(final boolean manual)
+    {
+        final DialogListState state = folderDialogState;
+        final DialogListScreen screen = folderDialogScreen;
+        if (state == null || screen == null || state.loading) { return; }
+        if (state.exhausted)
+        {
+            if (manual) { showAlert("No more chats.", AlertType.INFO, screen); }
+            return;
+        }
+        state.loading = true;
+        screen.setStatus(state.kind == DialogListState.CUSTOM
+                ? "scanning..." : "loading...", updateLabel);
+        final boolean first = !state.explicitLoaded;
+        final Dialog archiveOffset = lastUnpinned(state.dialogs);
+        final DialogFilterDefinition filter = state.filter == null
+                ? null : state.filter.copy();
+        final FolderScanCursor main = copyCursor(state.mainCursor);
+        final FolderScanCursor archived = copyCursor(state.archiveCursor);
+        final AsyncScope.Token asked = scope.capture();
+        Worker lane = manual ? worker : syncWorker;
+        boolean submitted = lane.submit(new Worker.Task()
+        {
+            public String name()
+            {
+                return state.kind == DialogListState.ARCHIVED
+                        ? "messages.getDialogs/archive" : "folder scan";
+            }
+
+            public Object run() throws Exception
+            {
+                if (state.kind == DialogListState.ARCHIVED)
+                {
+                    return archiveOffset == null
+                            ? telegram.getDialogsInFolder(1,
+                                    MemoryBudget.dialogPageSize())
+                            : telegram.getDialogsAfter(1, archiveOffset,
+                                    MemoryBudget.dialogPageSize());
+                }
+                return scanCustomFolder(filter, main, archived, first);
+            }
+        }, new Worker.Callback()
+        {
+            public void onSuccess(Object result)
+            {
+                if (!asked.sameSession() || folderDialogState != state)
+                {
+                    dropStale("folder page");
+                    return;
+                }
+                state.loading = false;
+                Peer selected = screen.selectedPeer();
+                if (state.kind == DialogListState.ARCHIVED)
+                {
+                    DialogPage page = (DialogPage) result;
+                    int fresh = countNew(state.dialogs, page.dialogs);
+                    Dialog[] merged = PageMerge.dialogs(state.dialogs,
+                            page.dialogs, Integer.MAX_VALUE);
+                    retainFolderTail(state, merged);
+                    if (page.total > state.total) { state.total = page.total; }
+                    state.totalKnown = page.total > 0 || page.complete;
+                    state.exhausted = fresh == 0 || page.complete
+                            || (state.total > 0
+                            && state.above + state.dialogs.length >= state.total);
+                }
+                else
+                {
+                    FolderLoadResult page = (FolderLoadResult) result;
+                    int fresh = countNew(state.dialogs, page.dialogs);
+                    Dialog[] merged = mergeFolderDialogs(state.dialogs,
+                            page.dialogs, state.filter);
+                    state.total += fresh;
+                    retainFolderTail(state, merged);
+                    state.scanned += page.scanned;
+                    state.explicitLoaded = true;
+                    state.mainCursor.offset = page.mainOffset;
+                    state.mainCursor.exhausted = page.mainExhausted;
+                    state.archiveCursor.offset = page.archiveOffset;
+                    state.archiveCursor.exhausted = page.archiveExhausted;
+                    state.exhausted = page.mainExhausted && page.archiveExhausted;
+                    state.totalKnown = state.exhausted;
+                }
+                showFolderDialogs(selected);
+                if (manual && state.exhausted && state.dialogs.length == 0)
+                {
+                    showAlert("No chats in this folder.", AlertType.INFO, screen);
+                }
+            }
+
+            public void onFailure(Throwable error)
+            {
+                if (!asked.sameSession() || folderDialogState != state)
+                {
+                    dropStale("folder page");
+                    return;
+                }
+                state.loading = false;
+                screen.setStatus(connectionLabel, updateLabel);
+                showAlertThen("Could not load folder", error, screen);
+            }
+        });
+        if (!submitted)
+        {
+            state.loading = false;
+            screen.setStatus(connectionLabel, updateLabel);
+            if (manual)
+            {
+                showRefused("Folder not loaded",
+                        "Another operation is still running. Try again.", screen);
+            }
+        }
+    }
+
+    private FolderLoadResult scanCustomFolder(DialogFilterDefinition filter,
+            FolderScanCursor main, FolderScanCursor archived, boolean first)
+            throws Exception
+    {
+        FolderLoadResult out = new FolderLoadResult();
+        Dialog[] found = new Dialog[0];
+        int now = (int) (System.currentTimeMillis() / 1000L);
+        if (first)
+        {
+            Peer[] explicit = unionPeers(filter.pinnedPeers, filter.includePeers);
+            if (explicit.length > 0)
+            {
+                Dialog[] rows = telegram.getPeerDialogs(explicit).dialogs;
+                found = matching(rows, filter, now, found);
+            }
+        }
+        int target = Math.max(1, MemoryBudget.dialogPageSize());
+        int rounds = 0;
+        while (found.length < target && !(main.exhausted && archived.exhausted)
+                && rounds++ < 64)
+        {
+            if (!main.exhausted)
+            {
+                DialogPage page = main.offset == null
+                        ? telegram.getDialogsInFolder(0, target)
+                        : telegram.getDialogsAfter(0, main.offset, target);
+                out.scanned += page.size();
+                found = matching(page.dialogs, filter, now, found);
+                Dialog next = lastUnpinned(page.dialogs);
+                main.exhausted = page.complete || page.size() == 0
+                        || next == null || sameDialogOffset(main.offset, next);
+                if (next != null) { main.offset = next; }
+            }
+            if (!archived.exhausted)
+            {
+                DialogPage page = archived.offset == null
+                        ? telegram.getDialogsInFolder(1, target)
+                        : telegram.getDialogsAfter(1, archived.offset, target);
+                out.scanned += page.size();
+                found = matching(page.dialogs, filter, now, found);
+                Dialog next = lastUnpinned(page.dialogs);
+                archived.exhausted = page.complete || page.size() == 0
+                        || next == null || sameDialogOffset(archived.offset, next);
+                if (next != null) { archived.offset = next; }
+            }
+        }
+        out.dialogs = mergeFolderDialogs(new Dialog[0], found, filter);
+        out.mainOffset = main.offset;
+        out.archiveOffset = archived.offset;
+        out.mainExhausted = main.exhausted;
+        out.archiveExhausted = archived.exhausted;
+        return out;
+    }
+
+    private static FolderScanCursor copyCursor(FolderScanCursor source)
+    {
+        FolderScanCursor out = new FolderScanCursor(source == null ? 0
+                : source.folderId);
+        if (source != null)
+        {
+            out.offset = source.offset;
+            out.scanned = source.scanned;
+            out.exhausted = source.exhausted;
+        }
+        return out;
+    }
+
+    private static Dialog[] matching(Dialog[] rows,
+            DialogFilterDefinition filter, int now, Dialog[] into)
+    {
+        if (rows == null) { return into; }
+        for (int i = 0; i < rows.length; i++)
+        {
+            Dialog dialog = rows[i];
+            if (!DialogFolderMatcher.matches(dialog, filter, now)) { continue; }
+            dialog.pinned = filter.containsPinned(dialog.peer);
+            into = appendUnique(into, dialog);
+        }
+        return into;
+    }
+
+    private static Dialog[] appendUnique(Dialog[] rows, Dialog value)
+    {
+        if (value == null || value.peer == null) { return rows; }
+        for (int i = 0; i < rows.length; i++)
+        {
+            if (rows[i] != null && samePeer(rows[i].peer, value.peer))
+            {
+                rows[i] = value;
+                return rows;
+            }
+        }
+        Dialog[] out = new Dialog[rows.length + 1];
+        System.arraycopy(rows, 0, out, 0, rows.length);
+        out[rows.length] = value;
+        return out;
+    }
+
+    private static Dialog[] mergeFolderDialogs(Dialog[] held, Dialog[] fresh,
+            DialogFilterDefinition filter)
+    {
+        Dialog[] out = held == null ? new Dialog[0] : held;
+        if (fresh != null)
+        {
+            for (int i = 0; i < fresh.length; i++)
+            {
+                out = appendUnique(out, fresh[i]);
+            }
+        }
+        for (int i = 1; i < out.length; i++)
+        {
+            Dialog value = out[i];
+            int j = i - 1;
+            while (j >= 0 && compareFolderDialogs(value, out[j], filter) < 0)
+            {
+                out[j + 1] = out[j];
+                j--;
+            }
+            out[j + 1] = value;
+        }
+        return out;
+    }
+
+    private static int compareFolderDialogs(Dialog a, Dialog b,
+            DialogFilterDefinition filter)
+    {
+        int ap = filter == null ? -1
+                : DialogFilterDefinition.indexOf(filter.pinnedPeers, a.peer);
+        int bp = filter == null ? -1
+                : DialogFilterDefinition.indexOf(filter.pinnedPeers, b.peer);
+        if (ap >= 0 && bp < 0) { return -1; }
+        if (ap < 0 && bp >= 0) { return 1; }
+        if (ap >= 0 && bp >= 0) { return ap - bp; }
+        if (a.date != b.date) { return a.date > b.date ? -1 : 1; }
+        return a.topMessageId == b.topMessageId ? 0
+                : (a.topMessageId > b.topMessageId ? -1 : 1);
+    }
+
+    private static int countNew(Dialog[] held, Dialog[] page)
+    {
+        if (page == null) { return 0; }
+        int count = 0;
+        for (int i = 0; i < page.length; i++)
+        {
+            boolean found = false;
+            for (int j = 0; j < held.length; j++)
+            {
+                if (page[i] != null && held[j] != null
+                        && samePeer(page[i].peer, held[j].peer))
+                {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) { count++; }
+        }
+        return count;
+    }
+
+    private static Dialog lastUnpinned(Dialog[] rows)
+    {
+        if (rows == null) { return null; }
+        for (int i = rows.length - 1; i >= 0; i--)
+        {
+            if (rows[i] != null && !rows[i].pinned) { return rows[i]; }
+        }
+        return null;
+    }
+
+    private static boolean sameDialogOffset(Dialog a, Dialog b)
+    {
+        return a != null && b != null && a.date == b.date
+                && a.topMessageId == b.topMessageId && samePeer(a.peer, b.peer);
+    }
+
+    private static Peer[] unionPeers(Peer[] first, Peer[] second)
+    {
+        Peer[] out = new Peer[0];
+        if (first != null)
+        {
+            for (int i = 0; i < first.length; i++)
+            {
+                if (DialogFilterDefinition.indexOf(out, first[i]) < 0)
+                {
+                    Peer[] grown = new Peer[out.length + 1];
+                    System.arraycopy(out, 0, grown, 0, out.length);
+                    grown[out.length] = first[i];
+                    out = grown;
+                }
+            }
+        }
+        if (second != null)
+        {
+            for (int i = 0; i < second.length; i++)
+            {
+                if (DialogFilterDefinition.indexOf(out, second[i]) < 0)
+                {
+                    Peer[] grown = new Peer[out.length + 1];
+                    System.arraycopy(out, 0, grown, 0, out.length);
+                    grown[out.length] = second[i];
+                    out = grown;
+                }
+            }
+        }
+        return out;
+    }
+
+    private static void retainFolderTail(DialogListState state, Dialog[] merged)
+    {
+        int cap = MemoryBudget.maxDialogs();
+        int drop = merged.length - cap;
+        if (drop > 0)
+        {
+            state.above += drop;
+            state.dialogs = PageMerge.keepLast(merged, cap);
+        }
+        else { state.dialogs = merged; }
+    }
+
+    private void setSelectedDialogPinned(final boolean pinned)
+    {
+        final Dialog selected = selectedDialogRow();
+        if (selected == null || selected.peer == null) { return; }
+        final DialogListState state = navigation.current() == folderDialogScreen
+                ? folderDialogState : null;
+        final boolean custom = state != null
+                && state.kind == DialogListState.CUSTOM;
+        if (custom && (state.filter == null || !state.filter.editable())) { return; }
+        final DialogFilterDefinition changed = custom ? state.filter.copy() : null;
+        if (changed != null) { changed.setPinned(selected.peer, pinned); }
+        final Displayable returnTo = navigation.current();
+        final AsyncScope.Token asked = scope.capture();
+        boolean submitted = worker.submit(new Worker.Task()
+        {
+            public String name() { return custom ? "update folder pin"
+                    : "messages.toggleDialogPin"; }
+            public Object run() throws Exception
+            {
+                if (custom) { telegram.updateDialogFilter(changed); }
+                else { telegram.toggleDialogPin(selected.peer, pinned); }
+                return null;
+            }
+        }, new Worker.Callback()
+        {
+            public void onSuccess(Object ignored)
+            {
+                if (!asked.sameSession()) { dropStale("pin dialog"); return; }
+                selected.pinned = pinned;
+                if (custom && folderDialogState == state)
+                {
+                    state.filter = changed;
+                    state.dialogs = mergeFolderDialogs(new Dialog[0],
+                            state.dialogs, changed);
+                    showFolderDialogs(selected.peer);
+                }
+                else if (returnTo == dialogList) { loadDialogs(); }
+                else if (returnTo == folderDialogScreen) { reloadFolderDialogs(); }
+            }
+            public void onFailure(Throwable error)
+            {
+                if (!asked.sameSession()) { dropStale("pin dialog"); return; }
+                showAlertThen(pinned ? "Could not pin chat"
+                        : "Could not unpin chat", error, returnTo);
+            }
+        });
+        if (!submitted)
+        {
+            showRefused("Chat not changed",
+                    "Another operation is still running. Try again.", returnTo);
+        }
+    }
+
+    private void setSelectedDialogArchived(final boolean archived)
+    {
+        final Dialog selected = selectedDialogRow();
+        if (selected == null || selected.peer == null) { return; }
+        final Displayable returnTo = navigation.current();
+        final AsyncScope.Token asked = scope.capture();
+        boolean submitted = worker.submit(new Worker.Task()
+        {
+            public String name() { return "folders.editPeerFolders"; }
+            public Object run() throws Exception
+            {
+                telegram.editPeerFolder(selected.peer, archived ? 1 : 0);
+                return null;
+            }
+        }, new Worker.Callback()
+        {
+            public void onSuccess(Object ignored)
+            {
+                if (!asked.sameSession()) { dropStale("archive dialog"); return; }
+                selected.folderId = archived ? 1 : 0;
+                if (returnTo == dialogList)
+                {
+                    dialogs = removeDialog(dialogs, selected.peer);
+                    if (dialogTotal > 0) { dialogTotal--; }
+                    showDialogList(null);
+                }
+                else if (returnTo == folderDialogScreen
+                        && folderDialogState != null)
+                {
+                    DialogListState state = folderDialogState;
+                    boolean remains = state.kind == DialogListState.CUSTOM
+                            && DialogFolderMatcher.matches(selected, state.filter,
+                            (int) (System.currentTimeMillis() / 1000L));
+                    if (!remains)
+                    {
+                        state.dialogs = removeDialog(state.dialogs, selected.peer);
+                        if (state.total > 0) { state.total--; }
+                    }
+                    showFolderDialogs(null);
+                }
+            }
+            public void onFailure(Throwable error)
+            {
+                if (!asked.sameSession()) { dropStale("archive dialog"); return; }
+                showAlertThen(archived ? "Could not archive chat"
+                        : "Could not unarchive chat", error, returnTo);
+            }
+        });
+        if (!submitted)
+        {
+            showRefused("Chat not changed",
+                    "Another operation is still running. Try again.", returnTo);
+        }
+    }
+
+    private static Dialog[] removeDialog(Dialog[] rows, Peer peer)
+    {
+        if (rows == null || peer == null) { return rows; }
+        int count = 0;
+        for (int i = 0; i < rows.length; i++)
+        {
+            if (rows[i] == null || !samePeer(rows[i].peer, peer)) { count++; }
+        }
+        if (count == rows.length) { return rows; }
+        Dialog[] out = new Dialog[count];
+        int at = 0;
+        for (int i = 0; i < rows.length; i++)
+        {
+            if (rows[i] == null || !samePeer(rows[i].peer, peer))
+            {
+                out[at++] = rows[i];
+            }
+        }
+        return out;
+    }
+
+    private void editSelectedFolder()
+    {
+        DialogFilterDefinition selected = selectedFolder();
+        if (selected == null)
+        {
+            showAlert("This system folder cannot be edited.", AlertType.INFO,
+                    foldersList);
+        }
+        else if (!selected.editable())
+        {
+            showAlert("Shared folders are read-only.", AlertType.INFO,
+                    foldersList);
+        }
+        else { editFolder(selected); }
+    }
+
+    private void editFolder(DialogFilterDefinition source)
+    {
+        editingFolder = source == null ? new DialogFilterDefinition()
+                : source.copy();
+        if (source == null) { editingFolder.id = nextFolderId(); }
+        folderEditor = new Form(source == null ? "New folder" : "Edit folder");
+        folderName = new TextField("Name", editingFolder.title, 24,
+                TextField.ANY);
+        folderIncludes = new ChoiceGroup("Include", ChoiceGroup.MULTIPLE);
+        folderIncludes.append("Contacts", null);
+        folderIncludes.append("Non-contacts", null);
+        folderIncludes.append("Groups", null);
+        folderIncludes.append("Channels", null);
+        folderIncludes.append("Bots", null);
+        folderIncludes.setSelectedIndex(0, editingFolder.contacts);
+        folderIncludes.setSelectedIndex(1, editingFolder.nonContacts);
+        folderIncludes.setSelectedIndex(2, editingFolder.groups);
+        folderIncludes.setSelectedIndex(3, editingFolder.broadcasts);
+        folderIncludes.setSelectedIndex(4, editingFolder.bots);
+        folderExcludes = new ChoiceGroup("Exclude", ChoiceGroup.MULTIPLE);
+        folderExcludes.append("Muted", null);
+        folderExcludes.append("Read", null);
+        folderExcludes.append("Archived", null);
+        folderExcludes.setSelectedIndex(0, editingFolder.excludeMuted);
+        folderExcludes.setSelectedIndex(1, editingFolder.excludeRead);
+        folderExcludes.setSelectedIndex(2, editingFolder.excludeArchived);
+        folderEditor.append(folderName);
+        folderEditor.append(folderIncludes);
+        folderEditor.append(folderExcludes);
+        folderEditor.addCommand(cmdSaveFolder);
+        folderEditor.addCommand(cmdIncludedChats);
+        folderEditor.addCommand(cmdExcludedChats);
+        folderEditor.addCommand(cmdBack);
+        folderEditor.setCommandListener(this);
+        pushScreen(folderEditor);
+    }
+
+    private int nextFolderId()
+    {
+        int id = 2;
+        while (true)
+        {
+            boolean used = false;
+            for (int i = 0; i < folderDefinitions.length; i++)
+            {
+                if (folderDefinitions[i] != null
+                        && folderDefinitions[i].id == id) { used = true; break; }
+            }
+            if (!used) { return id; }
+            id++;
+        }
+    }
+
+    private void readFolderEditor()
+    {
+        editingFolder.title = folderName.getString().trim();
+        editingFolder.contacts = folderIncludes.isSelected(0);
+        editingFolder.nonContacts = folderIncludes.isSelected(1);
+        editingFolder.groups = folderIncludes.isSelected(2);
+        editingFolder.broadcasts = folderIncludes.isSelected(3);
+        editingFolder.bots = folderIncludes.isSelected(4);
+        editingFolder.excludeMuted = folderExcludes.isSelected(0);
+        editingFolder.excludeRead = folderExcludes.isSelected(1);
+        editingFolder.excludeArchived = folderExcludes.isSelected(2);
+    }
+
+    private void saveFolderEditor()
+    {
+        if (editingFolder == null) { return; }
+        readFolderEditor();
+        if (editingFolder.title.length() == 0)
+        {
+            showAlert("Folder name is required.", AlertType.WARNING, folderEditor);
+            return;
+        }
+        if (unicodeCharacters(editingFolder.title) > 12)
+        {
+            showAlert("Folder name can contain at most 12 characters.",
+                    AlertType.WARNING, folderEditor);
+            return;
+        }
+        if (!editingFolder.hasInclusion())
+        {
+            showAlert("Choose an include rule or add an included chat.",
+                    AlertType.WARNING, folderEditor);
+            return;
+        }
+        final DialogFilterDefinition saved = editingFolder.copy();
+        final AsyncScope.Token asked = scope.capture();
+        boolean submitted = worker.submit(new Worker.Task()
+        {
+            public String name() { return "messages.updateDialogFilter"; }
+            public Object run() throws Exception
+            {
+                telegram.updateDialogFilter(saved);
+                return null;
+            }
+        }, new Worker.Callback()
+        {
+            public void onSuccess(Object ignored)
+            {
+                if (!asked.sameSession()) { dropStale("save folder"); return; }
+                editingFolder = null;
+                if (navigation.current() == folderEditor)
+                {
+                    restoreScreen(navigation.pop());
+                }
+                loadFolders(true);
+            }
+            public void onFailure(Throwable error)
+            {
+                if (!asked.sameSession()) { dropStale("save folder"); return; }
+                showAlertThen("Could not save folder", error, folderEditor);
+            }
+        });
+        if (!submitted)
+        {
+            showRefused("Folder not saved",
+                    "Another operation is still running. Try again.", folderEditor);
+        }
+    }
+
+    private static int unicodeCharacters(String value)
+    {
+        int count = 0;
+        for (int i = 0; i < value.length(); i++, count++)
+        {
+            char ch = value.charAt(i);
+            if (ch >= 0xd800 && ch <= 0xdbff && i + 1 < value.length())
+            {
+                char low = value.charAt(i + 1);
+                if (low >= 0xdc00 && low <= 0xdfff) { i++; }
+            }
+        }
+        return count;
+    }
+
+    private void showFolderPeerList(int mode)
+    {
+        readFolderEditor();
+        folderPeerListMode = mode;
+        folderPeerList = buildFolderPeerList(mode);
+        pushScreen(folderPeerList);
+    }
+
+    private List buildFolderPeerList(int mode)
+    {
+        List list = new List(mode == 1 ? "Included chats" : "Excluded chats",
+                List.IMPLICIT);
+        Peer[] peers = mode == 1 ? editingFolder.includePeers
+                : editingFolder.excludePeers;
+        for (int i = 0; i < peers.length; i++)
+        {
+            list.append(peers[i] == null || peers[i].title.length() == 0
+                    ? "Chat " + (i + 1) : peers[i].title, null);
+        }
+        if (peers.length == 0) { list.append("(none)", null); }
+        list.addCommand(cmdAddFolderPeer);
+        if (peers.length > 0) { list.addCommand(cmdRemoveFolderPeer); }
+        list.addCommand(cmdBack);
+        list.setCommandListener(this);
+        return list;
+    }
+
+    private void showFolderPeerSearch(int mode)
+    {
+        showSearchBox(false);
+        folderPeerPickMode = mode;
+        searchBox.setTitle(mode == 1 ? "Add included chat" : "Add excluded chat");
+    }
+
+    private void removeSelectedFolderPeer()
+    {
+        if (editingFolder == null || folderPeerList == null) { return; }
+        Peer[] peers = folderPeerListMode == 1 ? editingFolder.includePeers
+                : editingFolder.excludePeers;
+        int index = folderPeerList.getSelectedIndex();
+        if (index < 0 || index >= peers.length) { return; }
+        if (folderPeerListMode == 1) { editingFolder.setIncluded(peers[index], false); }
+        else { editingFolder.setExcluded(peers[index], false); }
+        List fresh = buildFolderPeerList(folderPeerListMode);
+        folderPeerList = fresh;
+        replaceScreen(fresh);
+    }
+
+    private void addSelectedSearchPeerToFolder()
+    {
+        Peer peer = selectedSearchPeer();
+        if (peer == null || editingFolder == null || folderPeerPickMode == 0)
+        {
+            return;
+        }
+        int mode = folderPeerPickMode;
+        if (mode == 1) { editingFolder.setIncluded(peer, true); }
+        else { editingFolder.setExcluded(peer, true); }
+        folderPeerPickMode = 0;
+        if (!navigation.isRoot()) { restoreScreen(navigation.pop()); }
+        List fresh = buildFolderPeerList(mode);
+        folderPeerList = fresh;
+        replaceScreen(fresh);
+    }
+
+    private void moveSelectedFolder(final int delta)
+    {
+        DialogFilterDefinition selected = selectedFolder();
+        if (selected == null || !selected.editable())
+        {
+            showAlert("Only personal folders can be reordered.", AlertType.INFO,
+                    foldersList);
+            return;
+        }
+        int at = foldersList.getSelectedIndex() - 2;
+        int to = at + delta;
+        if (to < 0 || to >= folderRows.length) { return; }
+        final DialogFilterDefinition[] reordered =
+                new DialogFilterDefinition[folderRows.length];
+        System.arraycopy(folderRows, 0, reordered, 0, folderRows.length);
+        DialogFilterDefinition swap = reordered[to];
+        reordered[to] = reordered[at];
+        reordered[at] = swap;
+        final int[] order = new int[reordered.length + 1];
+        order[0] = 0;
+        for (int i = 0; i < reordered.length; i++) { order[i + 1] = reordered[i].id; }
+        final List returnTo = foldersList;
+        final AsyncScope.Token asked = scope.capture();
+        boolean submitted = worker.submit(new Worker.Task()
+        {
+            public String name() { return "messages.updateDialogFiltersOrder"; }
+            public Object run() throws Exception
+            {
+                telegram.updateDialogFiltersOrder(order);
+                return null;
+            }
+        }, new Worker.Callback()
+        {
+            public void onSuccess(Object ignored)
+            {
+                if (!asked.sameSession()) { dropStale("reorder folders"); return; }
+                folderRows = reordered;
+                List fresh = buildFoldersList();
+                foldersList = fresh;
+                replaceScreen(fresh);
+            }
+            public void onFailure(Throwable error)
+            {
+                if (!asked.sameSession()) { dropStale("reorder folders"); return; }
+                showAlertThen("Could not reorder folders", error, returnTo);
+            }
+        });
+        if (!submitted)
+        {
+            showRefused("Folders not reordered",
+                    "Another operation is still running. Try again.", returnTo);
+        }
+    }
+
+    private void confirmDeleteSelectedFolder()
+    {
+        DialogFilterDefinition selected = selectedFolder();
+        if (selected == null || !selected.editable())
+        {
+            showAlert("Only personal folders can be deleted.", AlertType.INFO,
+                    foldersList);
+            return;
+        }
+        pendingDeleteFolder = selected;
+        deleteFolderConfirm = new Alert("Delete folder",
+                "Delete \"" + selected.title + "\"? Chats will not be deleted.",
+                null, AlertType.CONFIRMATION);
+        deleteFolderConfirm.setTimeout(Alert.FOREVER);
+        deleteFolderConfirm.addCommand(cmdConfirmDeleteFolder);
+        deleteFolderConfirm.addCommand(cmdTouchCancel);
+        deleteFolderConfirm.setCommandListener(this);
+        display.setCurrent(deleteFolderConfirm, foldersList);
+    }
+
+    private void deleteSelectedFolder()
+    {
+        final DialogFilterDefinition doomed = pendingDeleteFolder;
+        if (doomed == null) { return; }
+        final AsyncScope.Token asked = scope.capture();
+        boolean submitted = worker.submit(new Worker.Task()
+        {
+            public String name() { return "messages.updateDialogFilter/delete"; }
+            public Object run() throws Exception
+            {
+                telegram.deleteDialogFilter(doomed.id);
+                return null;
+            }
+        }, new Worker.Callback()
+        {
+            public void onSuccess(Object ignored)
+            {
+                if (!asked.sameSession()) { dropStale("delete folder"); return; }
+                pendingDeleteFolder = null;
+                deleteFolderConfirm = null;
+                display.setCurrent(foldersList);
+                loadFolders(true);
+            }
+            public void onFailure(Throwable error)
+            {
+                if (!asked.sameSession()) { dropStale("delete folder"); return; }
+                deleteFolderConfirm = null;
+                display.setCurrent(foldersList);
+                showAlertThen("Could not delete folder", error, foldersList);
+            }
+        });
+        if (!submitted)
+        {
+            display.setCurrent(foldersList);
+            showRefused("Folder not deleted",
+                    "Another operation is still running. Try again.", foldersList);
+        }
     }
 
     /** Restore points held before the oldest is forgotten. */
@@ -5449,7 +6731,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             }
         }
 
-        boolean refresh = batch.fullRefresh;
+        boolean refresh = batch.fullRefresh || batch.dialogListsChanged;
         boolean following = chatScreen != null
                 && display.getCurrent() == chatScreen && chatScreen.isAtEnd();
         int incomingForOpen = 0;
@@ -5488,6 +6770,15 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         if (dialogList != null && display.getCurrent() == dialogList)
         {
             showDialogList(selectedPeer);
+        }
+        if (batch.dialogListsChanged && folderDialogScreen != null
+                && display.getCurrent() == folderDialogScreen)
+        {
+            reloadFolderDialogs();
+        }
+        if (batch.folderDefinitionsChanged)
+        {
+            loadFolders(false);
         }
         if (topicScreen != null && display.getCurrent() == topicScreen)
         {

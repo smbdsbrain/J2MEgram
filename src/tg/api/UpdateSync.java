@@ -83,6 +83,8 @@ public final class UpdateSync
         final Vector reactions = new Vector();
         final Vector polls = new Vector();
         boolean fullRefresh;
+        boolean dialogListsChanged;
+        boolean folderDefinitionsChanged;
 
         UpdateBatch freeze()
         {
@@ -98,6 +100,8 @@ public final class UpdateSync
             out.polls = new PollUpdate[polls.size()];
             polls.copyInto(out.polls);
             out.fullRefresh = fullRefresh;
+            out.dialogListsChanged = dialogListsChanged;
+            out.folderDefinitionsChanged = folderDefinitionsChanged;
             return out;
         }
 
@@ -105,7 +109,8 @@ public final class UpdateSync
         {
             return messages.size() == 0 && edits.size() == 0 && reads.size() == 0
                     && reactions.size() == 0 && polls.size() == 0
-                    && !fullRefresh;
+                    && !fullRefresh && !dialogListsChanged
+                    && !folderDefinitionsChanged;
         }
     }
 
@@ -1203,6 +1208,27 @@ public final class UpdateSync
             batch.fullRefresh = true;
             if (!authoritative) { requestRecovery("unsupported message mutation"); }
             return false;
+        }
+        if (update.id == Api.UPDATE_FOLDER_PEERS)
+        {
+            int pts = update.intAt(Api.F_UPDATE_FOLDER_PEERS__PTS);
+            int count = update.intAt(Api.F_UPDATE_FOLDER_PEERS__PTS_COUNT);
+            if (!authoritative && !applyCommonPts(pts, count)) { return false; }
+            batch.dialogListsChanged = true;
+            return true;
+        }
+        if (update.id == Api.UPDATE_DIALOG_PINNED
+                || update.id == Api.UPDATE_PINNED_DIALOGS)
+        {
+            batch.dialogListsChanged = true;
+            return true;
+        }
+        if (update.id == Api.UPDATE_DIALOG_FILTER
+                || update.id == Api.UPDATE_DIALOG_FILTER_ORDER
+                || update.id == Api.UPDATE_DIALOG_FILTERS)
+        {
+            batch.folderDefinitionsChanged = true;
+            return true;
         }
         return false;
     }

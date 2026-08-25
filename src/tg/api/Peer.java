@@ -36,6 +36,10 @@ public final class Peer
 
     public boolean self;
     public boolean premium;
+    public boolean contact;
+    public boolean bot;
+    public boolean broadcast;
+    public boolean megagroup;
 
     /**
      * A supergroup with topics enabled. Read from {@code channel.forum} on
@@ -90,6 +94,8 @@ public final class Peer
         p.username = obj.str(Api.F_USER__USERNAME);
         p.self = obj.num(Api.F_USER__SELF) != 0;
         p.premium = obj.num(Api.F_USER__PREMIUM) != 0;
+        p.contact = obj.num(Api.F_USER__CONTACT) != 0;
+        p.bot = obj.num(Api.F_USER__BOT) != 0;
         p.avatar = AvatarRef.from(obj.obj(Api.F_USER__PHOTO));
 
         String first = obj.strOrEmpty(Api.F_USER__FIRST_NAME);
@@ -145,6 +151,8 @@ public final class Peer
             p.username = obj.str(Api.F_CHANNEL__USERNAME);
             p.avatar = AvatarRef.from(obj.obj(Api.F_CHANNEL__PHOTO));
             p.forum = obj.num(Api.F_CHANNEL__FORUM) != 0;
+            p.broadcast = obj.num(Api.F_CHANNEL__BROADCAST) != 0;
+            p.megagroup = obj.num(Api.F_CHANNEL__MEGAGROUP) != 0;
             return p;
         }
         if (obj.id == Api.CHANNEL_FORBIDDEN)
@@ -152,6 +160,36 @@ public final class Peer
             Peer p = new Peer(CHANNEL, obj.num(Api.F_CHANNEL_FORBIDDEN__ID));
             p.accessHash = obj.num(Api.F_CHANNEL_FORBIDDEN__ACCESS_HASH);
             p.title = obj.strOrEmpty(Api.F_CHANNEL_FORBIDDEN__TITLE);
+            return p;
+        }
+        return null;
+    }
+
+    /** Read an InputPeer returned inside a dialog filter. */
+    public static Peer fromInputPeerObj(TlObj obj)
+    {
+        if (obj == null) { return null; }
+        if (obj.id == Api.INPUT_PEER_SELF)
+        {
+            Peer p = new Peer(USER, 0);
+            p.self = true;
+            return p;
+        }
+        if (obj.id == Api.INPUT_PEER_USER)
+        {
+            Peer p = new Peer(USER, obj.num(Api.F_INPUT_PEER_USER__USER_ID));
+            p.accessHash = obj.num(Api.F_INPUT_PEER_USER__ACCESS_HASH);
+            return p;
+        }
+        if (obj.id == Api.INPUT_PEER_CHAT)
+        {
+            return new Peer(CHAT, obj.num(Api.F_INPUT_PEER_CHAT__CHAT_ID));
+        }
+        if (obj.id == Api.INPUT_PEER_CHANNEL)
+        {
+            Peer p = new Peer(CHANNEL,
+                    obj.num(Api.F_INPUT_PEER_CHANNEL__CHANNEL_ID));
+            p.accessHash = obj.num(Api.F_INPUT_PEER_CHANNEL__ACCESS_HASH);
             return p;
         }
         return null;

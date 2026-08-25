@@ -218,7 +218,12 @@ public final class Message
     /** Local visibility rule; the server remains authoritative on permissions. */
     public boolean canEditText()
     {
-        return id > 0 && outgoing && !service && media == null
+        // messageMediaWebPage is generated from the text by Telegram. It is
+        // still a plain text message as far as messages.editMessage is
+        // concerned; treating the preview like an attachment hides Edit as
+        // soon as the server happens to resolve a pasted URL.
+        return id > 0 && outgoing && !service
+                && (media == null || media.kind == Media.LINK)
                 && text != null && text.length() > 0;
     }
 

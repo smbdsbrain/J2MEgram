@@ -261,12 +261,12 @@ public final class Requests
      */
     public static byte[] getDialogs(int limit)
     {
-        return getDialogs(null, limit, 0);
+        return getDialogs(null, limit, 0, -1);
     }
 
     public static byte[] getDialogs(Dialog offset, int limit)
     {
-        return getDialogs(offset, limit, 0);
+        return getDialogs(offset, limit, 0, -1);
     }
 
     /**
@@ -288,9 +288,17 @@ public final class Requests
      */
     public static byte[] getDialogs(Dialog offset, int limit, long hash)
     {
+        return getDialogs(offset, limit, hash, -1);
+    }
+
+    /** Folder-aware variant. folderId 0/1 selects main/archive; -1 omits it. */
+    public static byte[] getDialogs(Dialog offset, int limit, long hash,
+                                    int folderId)
+    {
         TlWriter w = new TlWriter(64);
         w.writeInt(Api.MESSAGES_GET_DIALOGS);
-        w.writeInt(0);                      // flags
+        w.writeInt(folderId >= 0 ? 2 : 0); // flags.1: folder_id
+        if (folderId >= 0) { w.writeInt(folderId); }
         w.writeInt(offset == null ? 0 : offset.date);
         w.writeInt(offset == null ? 0 : offset.topMessageId);
         if (offset == null) { writeInputPeerEmpty(w); }
@@ -298,6 +306,115 @@ public final class Requests
         w.writeInt(limit);
         w.writeLong(offset == null ? hash : 0);
         return w.toByteArray();
+    }
+
+    /** inputDialogPeer#fcaafeb7 peer:InputPeer = InputDialogPeer */
+    public static void writeInputDialogPeer(TlWriter w, Peer peer)
+    {
+        w.writeInt(Api.INPUT_DIALOG_PEER);
+        writeInputPeer(w, peer);
+    }
+
+    /** messages.toggleDialogPin#a731e257 flags:# pinned:flags.0?true ... */
+    public static byte[] toggleDialogPin(Peer peer, boolean pinned)
+    {
+        TlWriter w = new TlWriter(48);
+        w.writeInt(Api.MESSAGES_TOGGLE_DIALOG_PIN);
+        w.writeInt(pinned ? 1 : 0);
+        writeInputDialogPeer(w, peer);
+        return w.toByteArray();
+    }
+
+    /** folders.editPeerFolders#6847d0ab folder_peers:Vector<InputFolderPeer> */
+    public static byte[] editPeerFolder(Peer peer, int folderId)
+    {
+        TlWriter w = new TlWriter(48);
+        w.writeInt(Api.FOLDERS_EDIT_PEER_FOLDERS);
+        w.writeVectorHeader(1);
+        w.writeInt(Api.INPUT_FOLDER_PEER);
+        writeInputPeer(w, peer);
+        w.writeInt(folderId);
+        return w.toByteArray();
+    }
+
+    /** messages.getDialogFilters#efd48c89 = messages.DialogFilters */
+    public static byte[] getDialogFilters()
+    {
+        TlWriter w = new TlWriter(8);
+        w.writeInt(Api.MESSAGES_GET_DIALOG_FILTERS);
+        return w.toByteArray();
+    }
+
+    /** messages.getPeerDialogs#e470bcfd peers:Vector<InputDialogPeer> */
+    public static byte[] getPeerDialogs(Peer[] peers)
+    {
+        if (peers == null) { peers = new Peer[0]; }
+        TlWriter w = new TlWriter(16 + peers.length * 32);
+        w.writeInt(Api.MESSAGES_GET_PEER_DIALOGS);
+        w.writeVectorHeader(peers.length);
+        for (int i = 0; i < peers.length; i++)
+        {
+            writeInputDialogPeer(w, peers[i]);
+        }
+        return w.toByteArray();
+    }
+
+    /** messages.updateDialogFilter#1ad4a04a; null deletes the filter. */
+    public static byte[] updateDialogFilter(int id,
+            DialogFilterDefinition filter)
+    {
+        TlWriter w = new TlWriter(256);
+        w.writeInt(Api.MESSAGES_UPDATE_DIALOG_FILTER);
+        w.writeInt(filter == null ? 0 : 1);
+        w.writeInt(id);
+        if (filter != null) { writeDialogFilter(w, filter); }
+        return w.toByteArray();
+    }
+
+    /** messages.updateDialogFiltersOrder#c563c1e4 order:Vector<int> */
+    public static byte[] updateDialogFiltersOrder(int[] order)
+    {
+        if (order == null) { order = new int[0]; }
+        TlWriter w = new TlWriter(12 + order.length * 4);
+        w.writeInt(Api.MESSAGES_UPDATE_DIALOG_FILTERS_ORDER);
+        w.writeVectorHeader(order.length);
+        for (int i = 0; i < order.length; i++) { w.writeInt(order[i]); }
+        return w.toByteArray();
+    }
+
+    /** Serialize the editable personal DialogFilter form. */
+    public static void writeDialogFilter(TlWriter w,
+            DialogFilterDefinition filter)
+    {
+        int flags = (filter.contacts ? 1 : 0)
+                | (filter.nonContacts ? 2 : 0)
+                | (filter.groups ? 4 : 0)
+                | (filter.broadcasts ? 8 : 0)
+                | (filter.bots ? 16 : 0)
+                | (filter.excludeMuted ? (1 << 11) : 0)
+                | (filter.excludeRead ? (1 << 12) : 0)
+                | (filter.excludeArchived ? (1 << 13) : 0)
+                | (filter.emoticon != null ? (1 << 25) : 0)
+                | (filter.color >= 0 ? (1 << 27) : 0)
+                | (filter.titleNoAnimate ? (1 << 28) : 0);
+        w.writeInt(Api.DIALOG_FILTER);
+        w.writeInt(flags);
+        w.writeInt(filter.id);
+        w.writeInt(Api.TEXT_WITH_ENTITIES);
+        w.writeString(filter.title == null ? "" : filter.title);
+        w.writeVectorHeader(0);             // title entities
+        if (filter.emoticon != null) { w.writeString(filter.emoticon); }
+        if (filter.color >= 0) { w.writeInt(filter.color); }
+        writeInputPeers(w, filter.pinnedPeers);
+        writeInputPeers(w, filter.includePeers);
+        writeInputPeers(w, filter.excludePeers);
+    }
+
+    private static void writeInputPeers(TlWriter w, Peer[] peers)
+    {
+        if (peers == null) { peers = new Peer[0]; }
+        w.writeVectorHeader(peers.length);
+        for (int i = 0; i < peers.length; i++) { writeInputPeer(w, peers[i]); }
     }
 
     /**
