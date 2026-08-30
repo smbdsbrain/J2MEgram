@@ -35,7 +35,8 @@ param(
     [Parameter(Position = 0)]
     [ValidateSet('handshake', 'config', 'obfs-config', 'http-config',
                  'proxy-config', 'login', 'dialogs', 'dialog-hash',
-                 'folders', 'reactions', 'send', 'forum', 'updates')]
+                 'folders', 'reactions', 'send', 'forum', 'community',
+                 'updates')]
     [string]$Scenario = 'handshake',
 
     [ValidateSet('test', 'production')]
@@ -69,6 +70,7 @@ $mainClass = @{
     reactions = "tgtest.LiveReactionsTest"
     send      = "tgtest.LiveSendTest"
     forum     = "tgtest.LiveForumTest"
+    community = "tgtest.LiveCommunityAdministrationTest"
     updates   = "tgtest.LiveUpdatesTest"
 }[$Scenario]
 

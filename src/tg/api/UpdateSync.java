@@ -56,6 +56,8 @@ public final class UpdateSync
         String sentText;
         Peer editedPeer;
         int editedMessageId;
+        Peer affectedPeer;
+        boolean affectedTopic;
 
         Envelope(byte[] body) { this.body = body; }
     }
@@ -82,9 +84,20 @@ public final class UpdateSync
         final Vector reads = new Vector();
         final Vector reactions = new Vector();
         final Vector polls = new Vector();
+        final Vector dialogPeers = new Vector();
+        final Vector chatPeers = new Vector();
+        final Vector participantPeers = new Vector();
+        final Vector invitePeers = new Vector();
+        final Vector topicPeers = new Vector();
         boolean fullRefresh;
         boolean dialogListsChanged;
         boolean folderDefinitionsChanged;
+        boolean chatInfoChanged;
+        boolean participantsChanged;
+        boolean inviteLinksChanged;
+        boolean joinRequestsChanged;
+        boolean forumTopicsChanged;
+        boolean dialogIndexDirty;
 
         UpdateBatch freeze()
         {
@@ -102,6 +115,24 @@ public final class UpdateSync
             out.fullRefresh = fullRefresh;
             out.dialogListsChanged = dialogListsChanged;
             out.folderDefinitionsChanged = folderDefinitionsChanged;
+            out.dialogPeers = peers(dialogPeers);
+            out.chatPeers = peers(chatPeers);
+            out.participantPeers = peers(participantPeers);
+            out.invitePeers = peers(invitePeers);
+            out.topicPeers = peers(topicPeers);
+            out.chatInfoChanged = chatInfoChanged;
+            out.participantsChanged = participantsChanged;
+            out.inviteLinksChanged = inviteLinksChanged;
+            out.joinRequestsChanged = joinRequestsChanged;
+            out.forumTopicsChanged = forumTopicsChanged;
+            out.dialogIndexDirty = dialogIndexDirty;
+            return out;
+        }
+
+        private static Peer[] peers(Vector source)
+        {
+            Peer[] out = new Peer[source.size()];
+            source.copyInto(out);
             return out;
         }
 
@@ -109,8 +140,14 @@ public final class UpdateSync
         {
             return messages.size() == 0 && edits.size() == 0 && reads.size() == 0
                     && reactions.size() == 0 && polls.size() == 0
+                    && dialogPeers.size() == 0 && chatPeers.size() == 0
+                    && participantPeers.size() == 0 && invitePeers.size() == 0
+                    && topicPeers.size() == 0
                     && !fullRefresh && !dialogListsChanged
-                    && !folderDefinitionsChanged;
+                    && !folderDefinitionsChanged && !chatInfoChanged
+                    && !participantsChanged && !inviteLinksChanged
+                    && !joinRequestsChanged && !forumTopicsChanged
+                    && !dialogIndexDirty;
         }
     }
 
@@ -310,6 +347,12 @@ public final class UpdateSync
         enqueue(envelope);
     }
 
+    /** Feed an Updates-shaped local RPC result without labelling it as push. */
+    public void acceptRpc(byte[] body)
+    {
+        enqueue(new Envelope(body));
+    }
+
     /** Feed a sendMessage Updates result and retain short-sent message context. */
     public void acceptSent(byte[] body, Peer peer, String text)
     {
@@ -340,6 +383,30 @@ public final class UpdateSync
     public void acceptAffected(byte[] body)
     {
         enqueue(new Envelope(body));
+    }
+
+    /** Feed an affectedMessages/affectedHistory result with UI context. */
+    public void acceptAffected(byte[] body, Peer peer, boolean forumTopic)
+    {
+        Envelope envelope = new Envelope(body);
+        envelope.affectedPeer = peer;
+        envelope.affectedTopic = forumTopic;
+        enqueue(envelope);
+    }
+
+    /** Local RPC returned a non-Updates wrapper; publish its precise effect. */
+    public void invalidateParticipants(Peer peer)
+    {
+        PendingBatch batch = new PendingBatch();
+        markParticipant(batch, peer);
+        publish(batch);
+    }
+
+    public void invalidateInvites(Peer peer, boolean joinRequests)
+    {
+        PendingBatch batch = new PendingBatch();
+        markInvite(batch, peer, joinRequests);
+        publish(batch);
     }
 
     public void seedDialogs(Dialog[] dialogs)
@@ -868,8 +935,25 @@ public final class UpdateSync
     {
         TlObj obj = TlParser.parse(new TlReader(envelope.body));
         if (obj == null) { return; }
+        // addChatUser/inviteToChannel wrap the authoritative Updates object so
+        // they can also report privacy-blocked invitees.  The cursor logic is
+        // identical once the wrapper is removed.
+        if (obj.id == Api.MESSAGES_INVITED_USERS)
+        {
+            obj = obj.obj(Api.F_MESSAGES_INVITED_USERS__UPDATES);
+            if (obj == null) { return; }
+        }
         PendingBatch batch = new PendingBatch();
         boolean changed = false;
+
+        if (envelope.affectedPeer != null)
+        {
+            markDialog(batch, envelope.affectedPeer);
+            if (envelope.affectedTopic)
+            {
+                markTopic(batch, envelope.affectedPeer);
+            }
+        }
 
         if (obj.id == Api.MESSAGES_AFFECTED_MESSAGES)
         {
@@ -877,12 +961,20 @@ public final class UpdateSync
                     obj.intAt(Api.F_MESSAGES_AFFECTED_MESSAGES__PTS),
                     obj.intAt(Api.F_MESSAGES_AFFECTED_MESSAGES__PTS_COUNT));
         }
+        else if (obj.id == Api.MESSAGES_AFFECTED_HISTORY)
+        {
+            changed = applyCommonPts(
+                    obj.intAt(Api.F_MESSAGES_AFFECTED_HISTORY__PTS),
+                    obj.intAt(Api.F_MESSAGES_AFFECTED_HISTORY__PTS_COUNT));
+        }
         else if (obj.id == Api.UPDATE_SHORT_MESSAGE)
         {
             if (applyCommonPts(obj.intAt(Api.F_UPDATE_SHORT_MESSAGE__PTS),
                     obj.intAt(Api.F_UPDATE_SHORT_MESSAGE__PTS_COUNT)))
             {
-                batch.messages.addElement(shortUserMessage(obj));
+                Message message = shortUserMessage(obj);
+                batch.messages.addElement(message);
+                markDialog(batch, message.peer);
                 changed = true;
             }
         }
@@ -891,7 +983,9 @@ public final class UpdateSync
             if (applyCommonPts(obj.intAt(Api.F_UPDATE_SHORT_CHAT_MESSAGE__PTS),
                     obj.intAt(Api.F_UPDATE_SHORT_CHAT_MESSAGE__PTS_COUNT)))
             {
-                batch.messages.addElement(shortChatMessage(obj));
+                Message message = shortChatMessage(obj);
+                batch.messages.addElement(message);
+                markDialog(batch, message.peer);
                 changed = true;
             }
         }
@@ -909,6 +1003,7 @@ public final class UpdateSync
                     message.peer = envelope.sentPeer;
                     message.text = envelope.sentText == null ? "" : envelope.sentText;
                     batch.messages.addElement(message);
+                    markDialog(batch, message.peer);
                 }
                 changed = true;
             }
@@ -1017,6 +1112,7 @@ public final class UpdateSync
             }
         }
         batch.edits.addElement(message);
+        markDialog(batch, message.peer);
     }
 
     /**
@@ -1029,13 +1125,18 @@ public final class UpdateSync
         if (update == null) { return false; }
         if (update.id == Api.UPDATE_NEW_MESSAGE)
         {
+            TlObj raw = update.obj(Api.F_UPDATE_NEW_MESSAGE__MESSAGE);
             if (authoritative || applyCommonPts(
                     update.intAt(Api.F_UPDATE_NEW_MESSAGE__PTS),
                     update.intAt(Api.F_UPDATE_NEW_MESSAGE__PTS_COUNT)))
             {
-                Message message = Message.from(
-                        update.obj(Api.F_UPDATE_NEW_MESSAGE__MESSAGE), peers);
-                if (message != null) { batch.messages.addElement(message); }
+                Message message = Message.from(raw, peers);
+                if (message != null)
+                {
+                    batch.messages.addElement(message);
+                    markDialog(batch, message.peer);
+                    if (isTopicAction(raw)) { markTopic(batch, message.peer); }
+                }
                 return true;
             }
             return false;
@@ -1049,7 +1150,12 @@ public final class UpdateSync
             int count = update.intAt(Api.F_UPDATE_NEW_CHANNEL_MESSAGE__PTS_COUNT);
             if (authoritative || applyChannelPts(channel, remotePts, count))
             {
-                if (message != null) { batch.messages.addElement(message); }
+                if (message != null)
+                {
+                    batch.messages.addElement(message);
+                    markDialog(batch, message.peer);
+                    if (isTopicAction(raw)) { markTopic(batch, message.peer); }
+                }
                 return true;
             }
             return false;
@@ -1062,7 +1168,11 @@ public final class UpdateSync
             {
                 Message message = Message.from(
                         update.obj(Api.F_UPDATE_EDIT_MESSAGE__MESSAGE), peers);
-                if (message != null) { batch.edits.addElement(message); }
+                if (message != null)
+                {
+                    batch.edits.addElement(message);
+                    markDialog(batch, message.peer);
+                }
                 return true;
             }
             return false;
@@ -1078,7 +1188,11 @@ public final class UpdateSync
                     Api.F_UPDATE_EDIT_CHANNEL_MESSAGE__PTS_COUNT);
             if (authoritative || applyChannelPts(channel, remotePts, count))
             {
-                if (message != null) { batch.edits.addElement(message); }
+                if (message != null)
+                {
+                    batch.edits.addElement(message);
+                    markDialog(batch, message.peer);
+                }
                 return true;
             }
             return false;
@@ -1111,6 +1225,7 @@ public final class UpdateSync
                         Api.F_UPDATE_READ_HISTORY_OUTBOX__MAX_ID);
             }
             batch.reads.addElement(read);
+            markDialog(batch, read.peer);
             return true;
         }
         if (update.id == Api.UPDATE_READ_CHANNEL_INBOX)
@@ -1126,6 +1241,7 @@ public final class UpdateSync
             read.unreadCount = update.intAt(
                     Api.F_UPDATE_READ_CHANNEL_INBOX__STILL_UNREAD_COUNT);
             batch.reads.addElement(read);
+            markDialog(batch, read.peer);
             return true;
         }
         if (update.id == Api.UPDATE_READ_CHANNEL_OUTBOX)
@@ -1136,6 +1252,7 @@ public final class UpdateSync
             read.outboxMaxId = update.intAt(
                     Api.F_UPDATE_READ_CHANNEL_OUTBOX__MAX_ID);
             batch.reads.addElement(read);
+            markDialog(batch, read.peer);
             return true;
         }
         if (update.id == Api.UPDATE_READ_CHANNEL_DISCUSSION_INBOX)
@@ -1153,6 +1270,7 @@ public final class UpdateSync
             read.inboxMaxId = update.intAt(
                     Api.F_UPDATE_READ_CHANNEL_DISCUSSION_INBOX__READ_MAX_ID);
             batch.reads.addElement(read);
+            markDialog(batch, read.peer);
             return true;
         }
         if (update.id == Api.UPDATE_CHANNEL_TOO_LONG)
@@ -1178,6 +1296,7 @@ public final class UpdateSync
             changed.reactions = ReactionSummary.from(update.obj(
                     Api.F_UPDATE_MESSAGE_REACTIONS__REACTIONS));
             batch.reactions.addElement(changed);
+            markDialog(batch, changed.peer);
             return true;
         }
         if (update.id == Api.UPDATE_MESSAGE_POLL)
@@ -1200,12 +1319,20 @@ public final class UpdateSync
                     update.obj(Api.F_UPDATE_MESSAGE_POLL__POLL),
                     update.obj(Api.F_UPDATE_MESSAGE_POLL__RESULTS));
             batch.polls.addElement(changed);
+            markDialog(batch, changed.peer);
             return true;
         }
         if (update.id == Api.UPDATE_DELETE_MESSAGES
                 || update.id == Api.UPDATE_DELETE_CHANNEL_MESSAGES)
         {
             batch.fullRefresh = true;
+            if (update.id == Api.UPDATE_DELETE_CHANNEL_MESSAGES)
+            {
+                Peer peer = community(Peer.CHANNEL, update.num(
+                        Api.F_UPDATE_DELETE_CHANNEL_MESSAGES__CHANNEL_ID));
+                markDialog(batch, peer);
+                if (peer != null && peer.forum) { markTopic(batch, peer); }
+            }
             if (!authoritative) { requestRecovery("unsupported message mutation"); }
             return false;
         }
@@ -1215,12 +1342,21 @@ public final class UpdateSync
             int count = update.intAt(Api.F_UPDATE_FOLDER_PEERS__PTS_COUNT);
             if (!authoritative && !applyCommonPts(pts, count)) { return false; }
             batch.dialogListsChanged = true;
+            batch.dialogIndexDirty = true;
             return true;
         }
         if (update.id == Api.UPDATE_DIALOG_PINNED
                 || update.id == Api.UPDATE_PINNED_DIALOGS)
         {
             batch.dialogListsChanged = true;
+            batch.dialogIndexDirty = true;
+            return true;
+        }
+        if (update.id == Api.UPDATE_DIALOG_UNREAD_MARK
+                || update.id == Api.UPDATE_NOTIFY_SETTINGS)
+        {
+            batch.dialogListsChanged = true;
+            batch.dialogIndexDirty = true;
             return true;
         }
         if (update.id == Api.UPDATE_DIALOG_FILTER
@@ -1230,7 +1366,161 @@ public final class UpdateSync
             batch.folderDefinitionsChanged = true;
             return true;
         }
+        if (update.id == Api.UPDATE_CHAT_PARTICIPANTS)
+        {
+            TlObj participants = update.obj(
+                    Api.F_UPDATE_CHAT_PARTICIPANTS__PARTICIPANTS);
+            long id = participants == null ? 0 : participants.num(
+                    participants.id == Api.CHAT_PARTICIPANTS
+                            ? Api.F_CHAT_PARTICIPANTS__CHAT_ID
+                            : Api.F_CHAT_PARTICIPANTS_FORBIDDEN__CHAT_ID);
+            markParticipant(batch, community(Peer.CHAT, id));
+            return true;
+        }
+        if (update.id == Api.UPDATE_CHAT_PARTICIPANT_ADD
+                || update.id == Api.UPDATE_CHAT_PARTICIPANT_DELETE
+                || update.id == Api.UPDATE_CHAT_PARTICIPANT_ADMIN
+                || update.id == Api.UPDATE_CHAT_PARTICIPANT_RANK)
+        {
+            int field = update.id == Api.UPDATE_CHAT_PARTICIPANT_ADD
+                    ? Api.F_UPDATE_CHAT_PARTICIPANT_ADD__CHAT_ID
+                    : update.id == Api.UPDATE_CHAT_PARTICIPANT_DELETE
+                    ? Api.F_UPDATE_CHAT_PARTICIPANT_DELETE__CHAT_ID
+                    : update.id == Api.UPDATE_CHAT_PARTICIPANT_ADMIN
+                    ? Api.F_UPDATE_CHAT_PARTICIPANT_ADMIN__CHAT_ID
+                    : Api.F_UPDATE_CHAT_PARTICIPANT_RANK__CHAT_ID;
+            markParticipant(batch, community(Peer.CHAT, update.num(field)));
+            return true;
+        }
+        if (update.id == Api.UPDATE_CHAT_PARTICIPANT
+                || update.id == Api.UPDATE_CHANNEL_PARTICIPANT)
+        {
+            boolean channel = update.id == Api.UPDATE_CHANNEL_PARTICIPANT;
+            int qts = update.intAt(channel
+                    ? Api.F_UPDATE_CHANNEL_PARTICIPANT__QTS
+                    : Api.F_UPDATE_CHAT_PARTICIPANT__QTS);
+            if (!authoritative && !applyQts(qts)) { return false; }
+            Peer peer = community(channel ? Peer.CHANNEL : Peer.CHAT,
+                    update.num(channel
+                            ? Api.F_UPDATE_CHANNEL_PARTICIPANT__CHANNEL_ID
+                            : Api.F_UPDATE_CHAT_PARTICIPANT__CHAT_ID));
+            markParticipant(batch, peer);
+            markInvite(batch, peer, true);
+            return true;
+        }
+        if (update.id == Api.UPDATE_CHAT_DEFAULT_BANNED_RIGHTS)
+        {
+            markChat(batch, peers.resolve(Peer.fromPeerObj(update.obj(
+                    Api.F_UPDATE_CHAT_DEFAULT_BANNED_RIGHTS__PEER))));
+            return true;
+        }
+        if (update.id == Api.UPDATE_CHAT || update.id == Api.UPDATE_CHANNEL)
+        {
+            boolean channel = update.id == Api.UPDATE_CHANNEL;
+            markChat(batch, community(channel ? Peer.CHANNEL : Peer.CHAT,
+                    update.num(channel ? Api.F_UPDATE_CHANNEL__CHANNEL_ID
+                            : Api.F_UPDATE_CHAT__CHAT_ID)));
+            return true;
+        }
+        if (update.id == Api.UPDATE_PENDING_JOIN_REQUESTS)
+        {
+            Peer peer = peers.resolve(Peer.fromPeerObj(update.obj(
+                    Api.F_UPDATE_PENDING_JOIN_REQUESTS__PEER)));
+            markInvite(batch, peer, true);
+            return true;
+        }
+        if (update.id == Api.UPDATE_PINNED_FORUM_TOPIC
+                || update.id == Api.UPDATE_PINNED_FORUM_TOPICS)
+        {
+            markTopic(batch, peers.resolve(Peer.fromPeerObj(update.obj(
+                    update.id == Api.UPDATE_PINNED_FORUM_TOPIC
+                            ? Api.F_UPDATE_PINNED_FORUM_TOPIC__PEER
+                            : Api.F_UPDATE_PINNED_FORUM_TOPICS__PEER))));
+            return true;
+        }
+        if (update.id == Api.UPDATE_CHANNEL_VIEW_FORUM_AS_MESSAGES)
+        {
+            markTopic(batch, community(Peer.CHANNEL, update.num(
+                    Api.F_UPDATE_CHANNEL_VIEW_FORUM_AS_MESSAGES__CHANNEL_ID)));
+            return true;
+        }
         return false;
+    }
+
+    private boolean applyQts(int remote)
+    {
+        if (remote <= state.qts) { return false; }
+        if (state.qts == 0 || remote == state.qts + 1)
+        {
+            state.qts = remote;
+            return true;
+        }
+        requestRecovery("qts gap " + state.qts + " -> " + remote);
+        return false;
+    }
+
+    private Peer community(int kind, long id)
+    {
+        if (id == 0) { return null; }
+        return peers.resolve(new Peer(kind, id));
+    }
+
+    private static void addPeer(Vector target, Peer peer)
+    {
+        if (peer == null) { return; }
+        for (int i = 0; i < target.size(); i++)
+        {
+            Peer old = (Peer) target.elementAt(i);
+            if (old.kind == peer.kind && old.id == peer.id) { return; }
+        }
+        // One update envelope is bounded by MAX_QUEUE, but a pathological
+        // Updates vector must not turn an invalidation hint into an OOM.
+        if (target.size() >= MAX_QUEUE) { target.removeElementAt(0); }
+        target.addElement(peer);
+    }
+
+    private static void markDialog(PendingBatch batch, Peer peer)
+    {
+        addPeer(batch.dialogPeers, peer);
+        batch.dialogListsChanged = true;
+    }
+
+    private static void markChat(PendingBatch batch, Peer peer)
+    {
+        addPeer(batch.chatPeers, peer);
+        batch.chatInfoChanged = true;
+        markDialog(batch, peer);
+    }
+
+    private static void markParticipant(PendingBatch batch, Peer peer)
+    {
+        addPeer(batch.participantPeers, peer);
+        batch.participantsChanged = true;
+        markChat(batch, peer);
+    }
+
+    private static void markInvite(PendingBatch batch, Peer peer,
+            boolean requests)
+    {
+        addPeer(batch.invitePeers, peer);
+        if (requests) { batch.joinRequestsChanged = true; }
+        else { batch.inviteLinksChanged = true; }
+        markChat(batch, peer);
+    }
+
+    private static void markTopic(PendingBatch batch, Peer peer)
+    {
+        addPeer(batch.topicPeers, peer);
+        batch.forumTopicsChanged = true;
+        markDialog(batch, peer);
+    }
+
+    private static boolean isTopicAction(TlObj raw)
+    {
+        if (raw == null || raw.id != Api.MESSAGE_SERVICE) { return false; }
+        TlObj action = raw.obj(Api.F_MESSAGE_SERVICE__ACTION);
+        return action != null && (action.id == Api.MESSAGE_ACTION_TOPIC_CREATE
+                || action.id == Api.MESSAGE_ACTION_TOPIC_EDIT);
     }
 
     private boolean applyCommonPts(int remotePts, int count)

@@ -18,6 +18,23 @@ public final class UpdateBatch
     public boolean dialogListsChanged;
     /** Custom folder definitions or their order changed. */
     public boolean folderDefinitionsChanged;
+    /** Peers whose dialog metadata/order may have changed. */
+    public Peer[] dialogPeers = new Peer[0];
+    /** Peers whose basic/full chat information must be reloaded. */
+    public Peer[] chatPeers = new Peer[0];
+    /** Peers whose participant window must be reloaded. */
+    public Peer[] participantPeers = new Peer[0];
+    /** Peers whose exported links or pending requests changed. */
+    public Peer[] invitePeers = new Peer[0];
+    /** Forum peers whose topic page must be reloaded. */
+    public Peer[] topicPeers = new Peer[0];
+    public boolean chatInfoChanged;
+    public boolean participantsChanged;
+    public boolean inviteLinksChanged;
+    public boolean joinRequestsChanged;
+    public boolean forumTopicsChanged;
+    /** Update payload was insufficient to reconcile the durable dialog row. */
+    public boolean dialogIndexDirty;
     public String syncState;
     public String detail;
     /** Seconds until the next automatic sync attempt, or -1 when none. */

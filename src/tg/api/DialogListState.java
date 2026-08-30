@@ -19,6 +19,14 @@ public final class DialogListState
     public boolean exhausted;
     public int scanned;
     public boolean explicitLoaded;
+    /** Durable full-scan generation, zero until recovery starts. */
+    public int indexGeneration;
+    /** Live-update epoch captured when {@link #indexGeneration} started. */
+    public int indexGenerationEpoch;
+    /** Rows currently shown came from RMS rather than a complete scan. */
+    public boolean cached;
+    /** RMS failed for this opening; use the server-scan fallback only. */
+    public boolean indexFailed;
     public FolderScanCursor mainCursor;
     public FolderScanCursor archiveCursor;
 

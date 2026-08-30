@@ -26,6 +26,7 @@ public final class ForumTopic
     public boolean closed;
     public boolean pinned;
     public boolean hidden;
+    public boolean mine;
     public int topMessageId;
     public int unreadCount;
     public int readInboxMaxId;
@@ -72,6 +73,7 @@ public final class ForumTopic
         t.closed = obj.num(Api.F_FORUM_TOPIC__CLOSED) != 0;
         t.pinned = obj.num(Api.F_FORUM_TOPIC__PINNED) != 0;
         t.hidden = obj.num(Api.F_FORUM_TOPIC__HIDDEN) != 0;
+        t.mine = obj.num(Api.F_FORUM_TOPIC__MY) != 0;
         t.topMessageId = obj.intAt(Api.F_FORUM_TOPIC__TOP_MESSAGE);
         t.readInboxMaxId = obj.intAt(Api.F_FORUM_TOPIC__READ_INBOX_MAX_ID);
         t.readOutboxMaxId = obj.intAt(Api.F_FORUM_TOPIC__READ_OUTBOX_MAX_ID);

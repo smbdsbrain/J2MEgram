@@ -151,7 +151,7 @@ param(
                  'scroll', 'chats', 'hashprobe', 'navigate', 'formatting',
                  'forumspoiler', 'rc-identity',
                  'rc-sender', 'rc-receiver', 'rc-cleanup', 'rc-folders',
-                 'rc-poll-client')]
+                 'rc-poll-client', 'rc-community-target')]
     [string]$Scenario = 'probe',
     [string]$Mode = 'Auto',
     [string]$Phone = '',
@@ -307,6 +307,9 @@ switch ($Scenario) {
     'rc-receiver' { $driverArgs = @('receiver', $StateDir, $Role) }
     'rc-cleanup'  { $driverArgs = @('cleanup', $StateDir, $Role) }
     'rc-folders'  { $driverArgs = @('folders', $StateDir, $Role) }
+    'rc-community-target' {
+        $driverArgs = @('community-target', $StateDir, $Role)
+    }
     'rc-poll-client' { $driverArgs = @('poll-client', $StateDir, $Role) }
 }
 

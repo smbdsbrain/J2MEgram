@@ -269,8 +269,8 @@ instead — most will install it directly.
 
 | | |
 |---|---|
-| **`J2MEgram-<version>.jar` + `.jad`**<br>~523 KB | **Start here.** Class and method names survive in this build, so if it crashes, the error names real code and the report is actionable. While the client is this young that is worth more than the kilobytes. |
-| **`J2MEgram-<version>-min.jar` + `.jad`**<br>~374 KB | The same client, optimised and obfuscated — about 29% smaller. Use it if your phone rejects the normal build as too large. **No features are removed:** same source, same entry point, same preverification. Only names and dead code go, so a crash report from it says `tg.h.x` instead of `tg.ui.SettingsScreen`. |
+| **`J2MEgram-<version>.jar` + `.jad`**<br>~734 KB | **Start here.** Class and method names survive in this build, so if it crashes, the error names real code and the report is actionable. While the client is this young that is worth more than the kilobytes. |
+| **`J2MEgram-<version>-min.jar` + `.jad`**<br>~515 KB | The same client, optimised and obfuscated — about 30% smaller. Use it if your phone rejects the normal build as too large. **No features are removed:** same source, same entry point, same preverification. Only names and dead code go, so a crash report from it says `tg.h.x` instead of `tg.ui.SettingsScreen`. |
 
 Both are checked by an automated emulator run before release, obfuscated one
 included.

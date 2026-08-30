@@ -97,6 +97,11 @@ public final class Requests
         w.writeInt(Api.INPUT_USER_SELF);
     }
 
+    public static void writeInputUserEmpty(TlWriter w)
+    {
+        w.writeInt(Api.INPUT_USER_EMPTY);
+    }
+
     public static void writeInputUser(TlWriter w, Peer user)
     {
         if (user == null || user.self)
@@ -107,6 +112,17 @@ public final class Requests
         w.writeInt(Api.INPUT_USER);
         w.writeLong(user.id);
         w.writeLong(user.accessHash);
+    }
+
+    public static void writeInputChannel(TlWriter w, Peer channel)
+    {
+        if (channel == null || channel.kind != Peer.CHANNEL)
+        {
+            throw new IllegalArgumentException("channel is required");
+        }
+        w.writeInt(Api.INPUT_CHANNEL);
+        w.writeLong(channel.id);
+        w.writeLong(channel.accessHash);
     }
 
     // --------------------------------------------------------------- login
@@ -868,6 +884,312 @@ public final class Requests
         w.writeInt(Api.INPUT_CHANNEL);
         w.writeLong(channel.id);
         w.writeLong(channel.accessHash);
+        return w.toByteArray();
+    }
+
+    /** channels.getParticipants with recent or removed filtering and hash=0. */
+    public static byte[] getParticipants(Peer channel, int filter,
+                                         int offset, int limit)
+    {
+        TlWriter w = new TlWriter(64);
+        w.writeInt(Api.CHANNELS_GET_PARTICIPANTS);
+        writeInputChannel(w, channel);
+        if (filter == ChatParticipantPage.REMOVED)
+        {
+            w.writeInt(Api.CHANNEL_PARTICIPANTS_KICKED);
+            w.writeString("");
+        }
+        else
+        {
+            w.writeInt(Api.CHANNEL_PARTICIPANTS_RECENT);
+        }
+        w.writeInt(offset < 0 ? 0 : offset);
+        w.writeInt(limit < 1 ? 1 : limit);
+        w.writeLong(0);
+        return w.toByteArray();
+    }
+
+    /** Exact server participant used to revalidate a moderation target. */
+    public static byte[] getParticipant(Peer channel, Peer participant)
+    {
+        TlWriter w = new TlWriter(56);
+        w.writeInt(Api.CHANNELS_GET_PARTICIPANT);
+        writeInputChannel(w, channel);
+        writeInputPeer(w, participant);
+        return w.toByteArray();
+    }
+
+    /** messages.addChatUser with no forwarded history. */
+    public static byte[] addChatUser(Peer chat, Peer user)
+    {
+        TlWriter w = new TlWriter(48);
+        w.writeInt(Api.MESSAGES_ADD_CHAT_USER);
+        w.writeLong(chat.id);
+        writeInputUser(w, user);
+        w.writeInt(0);
+        return w.toByteArray();
+    }
+
+    /** messages.deleteChatUser without revoking the participant's history. */
+    public static byte[] deleteChatUser(Peer chat, Peer user)
+    {
+        TlWriter w = new TlWriter(48);
+        w.writeInt(Api.MESSAGES_DELETE_CHAT_USER);
+        w.writeInt(0);
+        w.writeLong(chat.id);
+        writeInputUser(w, user);
+        return w.toByteArray();
+    }
+
+    /** channels.inviteToChannel for one selected account. */
+    public static byte[] inviteToChannel(Peer channel, Peer user)
+    {
+        TlWriter w = new TlWriter(56);
+        w.writeInt(Api.CHANNELS_INVITE_TO_CHANNEL);
+        writeInputChannel(w, channel);
+        w.writeVectorHeader(1);
+        writeInputUser(w, user);
+        return w.toByteArray();
+    }
+
+    /**
+     * channels.editBanned. viewMessages=true is a permanent ban; false is the
+     * empty-rights shape used for kick on an active member and unban on a
+     * removed member.
+     */
+    public static byte[] editBanned(Peer channel, Peer participant,
+                                    boolean viewMessages)
+    {
+        TlWriter w = new TlWriter(72);
+        w.writeInt(Api.CHANNELS_EDIT_BANNED);
+        writeInputChannel(w, channel);
+        writeInputPeer(w, participant);
+        w.writeInt(Api.CHAT_BANNED_RIGHTS);
+        w.writeInt(viewMessages ? 1 : 0);
+        w.writeInt(0);                      // until_date: forever / empty
+        return w.toByteArray();
+    }
+
+    public static byte[] joinChannel(Peer channel)
+    {
+        TlWriter w = new TlWriter(32);
+        w.writeInt(Api.CHANNELS_JOIN_CHANNEL);
+        writeInputChannel(w, channel);
+        return w.toByteArray();
+    }
+
+    public static byte[] leaveChannel(Peer channel)
+    {
+        TlWriter w = new TlWriter(32);
+        w.writeInt(Api.CHANNELS_LEAVE_CHANNEL);
+        writeInputChannel(w, channel);
+        return w.toByteArray();
+    }
+
+    public static byte[] checkChatInvite(String hash)
+    {
+        TlWriter w = new TlWriter(16 + hash.length() * 2);
+        w.writeInt(Api.MESSAGES_CHECK_CHAT_INVITE);
+        w.writeString(hash);
+        return w.toByteArray();
+    }
+
+    public static byte[] importChatInvite(String hash)
+    {
+        TlWriter w = new TlWriter(16 + hash.length() * 2);
+        w.writeInt(Api.MESSAGES_IMPORT_CHAT_INVITE);
+        w.writeString(hash);
+        return w.toByteArray();
+    }
+
+    /** messages.editChatAdmin for the boolean admin model of a basic group. */
+    public static byte[] editBasicChatAdmin(Peer chat, Peer user,
+                                            boolean administrator)
+    {
+        TlWriter w = new TlWriter(48);
+        w.writeInt(Api.MESSAGES_EDIT_CHAT_ADMIN);
+        w.writeLong(chat.id);
+        writeInputUser(w, user);
+        w.writeBool(administrator);
+        return w.toByteArray();
+    }
+
+    /** channels.editAdmin, preserving an existing optional rank verbatim. */
+    public static byte[] editChannelAdmin(Peer channel, Peer user,
+            ChatAdminRightsDef rights, String rank)
+    {
+        if (rights == null) { rights = new ChatAdminRightsDef(); }
+        if (rank == null) { rank = ""; }
+        TlWriter w = new TlWriter(88 + rank.length() * 2);
+        w.writeInt(Api.CHANNELS_EDIT_ADMIN);
+        w.writeInt(rank.length() == 0 ? 0 : 1);
+        writeInputChannel(w, channel);
+        writeInputUser(w, user);
+        writeChatAdminRights(w, rights);
+        if (rank.length() > 0) { w.writeString(rank); }
+        return w.toByteArray();
+    }
+
+    public static void writeChatAdminRights(TlWriter w,
+                                             ChatAdminRightsDef rights)
+    {
+        w.writeInt(Api.CHAT_ADMIN_RIGHTS);
+        w.writeInt(rights == null ? 0 : rights.flags());
+    }
+
+    /** messages.editChatDefaultBannedRights for a basic group or channel. */
+    public static byte[] editDefaultPermissions(Peer chat,
+            ChatDefaultPermissions permissions)
+    {
+        TlWriter w = new TlWriter(64);
+        w.writeInt(Api.MESSAGES_EDIT_CHAT_DEFAULT_BANNED_RIGHTS);
+        writeInputPeer(w, chat);
+        writeDefaultBannedRights(w, permissions);
+        return w.toByteArray();
+    }
+
+    public static void writeDefaultBannedRights(TlWriter w,
+            ChatDefaultPermissions permissions)
+    {
+        w.writeInt(Api.CHAT_BANNED_RIGHTS);
+        w.writeInt(permissions == null ? 0 : permissions.bannedFlags());
+        w.writeInt(0);
+    }
+
+    /** Permanent exported link, optionally requiring administrator approval. */
+    public static byte[] exportChatInvite(Peer chat, String title,
+                                          boolean requestNeeded)
+    {
+        if (title == null) { title = ""; }
+        TlWriter w = new TlWriter(64 + title.length() * 2);
+        w.writeInt(Api.MESSAGES_EXPORT_CHAT_INVITE);
+        int flags = requestNeeded ? (1 << 3) : 0;
+        if (title.length() > 0) { flags |= 1 << 4; }
+        w.writeInt(flags);
+        writeInputPeer(w, chat);
+        if (title.length() > 0) { w.writeString(title); }
+        return w.toByteArray();
+    }
+
+    /** Active invite links owned by the current account. */
+    public static byte[] getExportedChatInvites(Peer chat,
+            ExportedInviteLink offset, int limit)
+    {
+        TlWriter w = new TlWriter(96);
+        w.writeInt(Api.MESSAGES_GET_EXPORTED_CHAT_INVITES);
+        w.writeInt(offset == null ? 0 : 1 << 2);
+        writeInputPeer(w, chat);
+        writeInputUserSelf(w);
+        if (offset != null)
+        {
+            w.writeInt(offset.date);
+            w.writeString(offset.link);
+        }
+        w.writeInt(limit);
+        return w.toByteArray();
+    }
+
+    /** Revoke one active exported link. */
+    public static byte[] revokeExportedChatInvite(Peer chat, String link)
+    {
+        TlWriter w = new TlWriter(64 + (link == null ? 0 : link.length() * 2));
+        w.writeInt(Api.MESSAGES_EDIT_EXPORTED_CHAT_INVITE);
+        w.writeInt(1 << 2);
+        writeInputPeer(w, chat);
+        w.writeString(link == null ? "" : link);
+        return w.toByteArray();
+    }
+
+    /** Pending requests for the whole chat, newest first. */
+    public static byte[] getJoinRequests(Peer chat, JoinRequest offset,
+                                         int limit)
+    {
+        TlWriter w = new TlWriter(80);
+        w.writeInt(Api.MESSAGES_GET_CHAT_INVITE_IMPORTERS);
+        w.writeInt(1);                       // flags.0 requested=true
+        writeInputPeer(w, chat);
+        w.writeInt(offset == null ? 0 : offset.date);
+        if (offset == null) { writeInputUserEmpty(w); }
+        else { writeInputUser(w, offset.user); }
+        w.writeInt(limit);
+        return w.toByteArray();
+    }
+
+    public static byte[] hideJoinRequest(Peer chat, Peer user,
+                                         boolean approved)
+    {
+        TlWriter w = new TlWriter(56);
+        w.writeInt(Api.MESSAGES_HIDE_CHAT_JOIN_REQUEST);
+        w.writeInt(approved ? 1 : 0);
+        writeInputPeer(w, chat);
+        writeInputUser(w, user);
+        return w.toByteArray();
+    }
+
+    public static byte[] createForumTopic(Peer forum, String title,
+                                          long randomId)
+    {
+        TlWriter w = new TlWriter(64 + title.length() * 2);
+        w.writeInt(Api.MESSAGES_CREATE_FORUM_TOPIC);
+        w.writeInt(0);
+        writeInputPeer(w, forum);
+        w.writeString(title);
+        w.writeLong(randomId);
+        return w.toByteArray();
+    }
+
+    public static byte[] renameForumTopic(Peer forum, int topicId,
+                                          String title)
+    {
+        TlWriter w = new TlWriter(64 + title.length() * 2);
+        w.writeInt(Api.MESSAGES_EDIT_FORUM_TOPIC);
+        w.writeInt(1);
+        writeInputPeer(w, forum);
+        w.writeInt(topicId);
+        w.writeString(title);
+        return w.toByteArray();
+    }
+
+    public static byte[] setForumTopicClosed(Peer forum, int topicId,
+                                             boolean closed)
+    {
+        TlWriter w = new TlWriter(48);
+        w.writeInt(Api.MESSAGES_EDIT_FORUM_TOPIC);
+        w.writeInt(1 << 2);
+        writeInputPeer(w, forum);
+        w.writeInt(topicId);
+        w.writeBool(closed);
+        return w.toByteArray();
+    }
+
+    public static byte[] setGeneralTopicHidden(Peer forum, boolean hidden)
+    {
+        TlWriter w = new TlWriter(48);
+        w.writeInt(Api.MESSAGES_EDIT_FORUM_TOPIC);
+        w.writeInt(1 << 3);
+        writeInputPeer(w, forum);
+        w.writeInt(ForumTopic.GENERAL_ID);
+        w.writeBool(hidden);
+        return w.toByteArray();
+    }
+
+    public static byte[] setForumTopicPinned(Peer forum, int topicId,
+                                             boolean pinned)
+    {
+        TlWriter w = new TlWriter(48);
+        w.writeInt(Api.MESSAGES_UPDATE_PINNED_FORUM_TOPIC);
+        writeInputPeer(w, forum);
+        w.writeInt(topicId);
+        w.writeBool(pinned);
+        return w.toByteArray();
+    }
+
+    public static byte[] deleteForumTopic(Peer forum, int topicId)
+    {
+        TlWriter w = new TlWriter(40);
+        w.writeInt(Api.MESSAGES_DELETE_TOPIC_HISTORY);
+        writeInputPeer(w, forum);
+        w.writeInt(topicId);
         return w.toByteArray();
     }
 

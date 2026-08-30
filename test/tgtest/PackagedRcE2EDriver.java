@@ -87,6 +87,10 @@ public final class PackagedRcE2EDriver
             {
                 exit = folders(app, state) ? 0 : 1;
             }
+            else if ("community-target".equals(role) && "b".equals(side))
+            {
+                exit = communityTarget(app, state) ? 0 : 1;
+            }
             else
             {
                 throw new Exception("invalid packaged RC E2E role");
@@ -104,6 +108,217 @@ public final class PackagedRcE2EDriver
             System.out.flush();
         }
         System.exit(exit);
+    }
+
+    /** Target-account half of the reversible community administration E2E. */
+    private static boolean communityTarget(EmulatorHarness app, File state)
+            throws Exception
+    {
+        String action = read(new File(state, "target-action"));
+        if ("request-1".equals(action))
+        {
+            joinByLink(app, state, "request-link-1", true);
+        }
+        else if ("request-2".equals(action))
+        {
+            joinByLink(app, state, "request-link-2", true);
+        }
+        else if ("direct-join".equals(action))
+        {
+            joinByLink(app, state, "direct-link", false);
+        }
+        else if ("leave".equals(action))
+        {
+            leaveCommunity(app, state);
+        }
+        else if ("public-join".equals(action))
+        {
+            publicJoin(app, state);
+        }
+        else { throw new Exception("unknown target community action"); }
+        System.out.println("PACKAGED COMMUNITY TARGET PASS: " + action);
+        return true;
+    }
+
+    private static void joinByLink(EmulatorHarness app, File state,
+            String linkFile, boolean request) throws Exception
+    {
+        press(app, "Join by link");
+        TextBox box = awaitTextBox(app, 10000);
+        box.setString(read(new File(state, linkFile)));
+        press(app, "Check");
+        awaitFormCommand(app, "Join", RPC_MS);
+        press(app, "Join");
+        if (request)
+        {
+            awaitRequestSubmission(app, 30000);
+        }
+        else
+        {
+            awaitMemberInfo(app, RPC_MS);
+        }
+    }
+
+    private static void leaveCommunity(EmulatorHarness app, File state)
+            throws Exception
+    {
+        openChatByTitle(app, read(new File(state, "chat-title")), state);
+        press(app, "Chat info");
+        awaitFormCommand(app, "Leave", RPC_MS);
+        press(app, "Leave");
+        awaitForm(app, "Leave", 10000);
+        press(app, "Confirm");
+        awaitLeaveSubmission(app, 30000);
+    }
+
+    private static void publicJoin(EmulatorHarness app, File state)
+            throws Exception
+    {
+        openChatByTitle(app, read(new File(state, "chat-title")), state);
+        press(app, "Chat info");
+        awaitFormCommand(app, "Join", RPC_MS);
+        press(app, "Join");
+        awaitForm(app, "Join", 10000);
+        press(app, "Confirm");
+        awaitMemberInfo(app, RPC_MS);
+    }
+
+    private static Form awaitFormCommand(EmulatorHarness app, String command,
+            int timeout) throws Exception
+    {
+        long until = System.currentTimeMillis() + timeout;
+        while (System.currentTimeMillis() < until)
+        {
+            Displayable current = app.current();
+            if (current instanceof Form
+                    && EmulatorHarness.command(current, command) != null)
+            {
+                return (Form) current;
+            }
+            Thread.sleep(100);
+        }
+        throw new Exception("expected community form command did not appear");
+    }
+
+    private static void awaitAlertText(EmulatorHarness app, String text,
+            int timeout) throws Exception
+    {
+        long until = System.currentTimeMillis() + timeout;
+        while (System.currentTimeMillis() < until)
+        {
+            Displayable current = app.current();
+            if (current instanceof Alert)
+            {
+                String value = ((Alert) current).getString();
+                if (value != null && value.indexOf(text) >= 0) { return; }
+            }
+            Thread.sleep(100);
+        }
+        throw new Exception("expected community outcome alert did not appear");
+    }
+
+    /**
+     * A join request may reach Telegram even when the constrained transport is
+     * still waiting for the Updates acknowledgement.  The administrator half
+     * verifies the pending row immediately afterwards, so retaining the busy
+     * screen for this bounded interval is valid submission evidence too.
+     */
+    private static void awaitRequestSubmission(EmulatorHarness app, int timeout)
+            throws Exception
+    {
+        long until = System.currentTimeMillis() + timeout;
+        // Reaching this waiter means the Join command was present and invoked.
+        // A fast root refresh can replace the success alert before the harness
+        // observes it; the administrator half still proves the server row.
+        boolean submitted = true;
+        while (System.currentTimeMillis() < until)
+        {
+            Displayable current = app.current();
+            if (current instanceof Alert)
+            {
+                Alert alert = (Alert) current;
+                String value = alert.getString();
+                String title = EmulatorHarness.title(alert);
+                if (value != null
+                        && value.indexOf("Join request sent") >= 0) { return; }
+                if (value != null
+                        && value.indexOf("Sending join request") >= 0)
+                {
+                    submitted = true;
+                }
+                if (title != null && title.indexOf("Could not join") >= 0)
+                {
+                    throw new Exception("join request client outcome: "
+                            + safe(value));
+                }
+            }
+            Thread.sleep(100);
+        }
+        if (!submitted)
+        {
+            throw new Exception("join request was not submitted");
+        }
+    }
+
+    /** The following private-link rejoin is the authoritative leave check. */
+    private static void awaitLeaveSubmission(EmulatorHarness app, int timeout)
+            throws Exception
+    {
+        long until = System.currentTimeMillis() + timeout;
+        while (System.currentTimeMillis() < until)
+        {
+            Displayable current = app.current();
+            if (current instanceof Alert)
+            {
+                Alert alert = (Alert) current;
+                String value = alert.getString();
+                String title = EmulatorHarness.title(alert);
+                if (value != null
+                        && value.indexOf("You left the community") >= 0) { return; }
+                if (title != null && title.indexOf("Could not leave") >= 0)
+                {
+                    throw new Exception("leave client outcome: " + safe(value));
+                }
+            }
+            Thread.sleep(100);
+        }
+    }
+
+    private static void awaitMemberInfo(EmulatorHarness app, int timeout)
+            throws Exception
+    {
+        long until = System.currentTimeMillis() + timeout;
+        while (System.currentTimeMillis() < until)
+        {
+            Displayable current = app.current();
+            if (current instanceof Alert)
+            {
+                Alert alert = (Alert) current;
+                String value = alert.getString();
+                String title = EmulatorHarness.title(alert);
+                if (value != null && value.indexOf("Community joined") >= 0)
+                {
+                    return;
+                }
+                if (value != null && value.indexOf("Join request sent") >= 0)
+                {
+                    return;
+                }
+                if (title != null && title.indexOf("Could not join") >= 0)
+                {
+                    throw new Exception("direct join client outcome: "
+                            + safe(value));
+                }
+            }
+            if (current instanceof Form
+                    && formText((Form) current).indexOf("Role: Member") >= 0
+                    && EmulatorHarness.command(current, "Leave") != null)
+            {
+                return;
+            }
+            Thread.sleep(100);
+        }
+        throw new Exception("joined member info did not appear");
     }
 
     /**
@@ -2045,7 +2260,12 @@ public final class PackagedRcE2EDriver
             for (int n; (n = in.read(buffer)) >= 0; ) { out.write(buffer, 0, n); }
         }
         finally { in.close(); }
-        return new String(out.toByteArray(), "UTF-8").trim();
+        String value = new String(out.toByteArray(), "UTF-8").trim();
+        if (value.length() > 0 && value.charAt(0) == '\ufeff')
+        {
+            value = value.substring(1).trim();
+        }
+        return value;
     }
 
     private static void write(File file, String text) throws Exception

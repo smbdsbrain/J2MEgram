@@ -216,6 +216,12 @@ public final class MemoryBudget
     private static final int MIN_TOPIC_PAGE      = 10;
     private static final int REF_TOPIC_MARGIN    = 8;
     private static final int MIN_TOPIC_MARGIN    = 4;
+    private static final int REF_PARTICIPANTS    = 60;
+    private static final int MIN_PARTICIPANTS    = 20;
+    private static final int REF_PARTICIPANT_PAGE = 20;
+    private static final int MIN_PARTICIPANT_PAGE = 10;
+    private static final int REF_PARTICIPANT_MARGIN = 8;
+    private static final int MIN_PARTICIPANT_MARGIN = 4;
 
     private static final int REF_PHOTO_PIXELS    = 307200;
     private static final int MIN_PHOTO_PIXELS    = 16384;
@@ -448,6 +454,24 @@ public final class MemoryBudget
         return scale(REF_TOPIC_MARGIN, MIN_TOPIC_MARGIN);
     }
 
+    /** Participant rows held around the reader for a remote channel list. */
+    public static int maxParticipants()
+    {
+        return scale(REF_PARTICIPANTS, MIN_PARTICIPANTS);
+    }
+
+    /** Rows requested per channels.getParticipants round trip. */
+    public static int participantPageSize()
+    {
+        return scale(REF_PARTICIPANT_PAGE, MIN_PARTICIPANT_PAGE);
+    }
+
+    /** Rows below the viewport at which participant prefetch begins. */
+    public static int participantPrefetchMargin()
+    {
+        return scale(REF_PARTICIPANT_MARGIN, MIN_PARTICIPANT_MARGIN);
+    }
+
     /** Resolved users and chats kept for title and avatar lookup. */
     public static int peerCacheEntries() { return scale(REF_PEERS, MIN_PEERS); }
 
@@ -528,7 +552,7 @@ public final class MemoryBudget
     /** Diagnostic lines. Contains no user data, so it is safe to upload. */
     public static String[] lines()
     {
-        String[] out = new String[9];
+        String[] out = new String[10];
         out[0] = "heapCeiling = " + ceiling
                  + (ceiling > 0 ? " (" + (ceiling / 1024) + " KB)" : " (unmeasured)");
         out[1] = "heapBlock = " + largestBlock;
@@ -547,6 +571,9 @@ public final class MemoryBudget
         out[8] = "chatWindow = " + layoutWindowScreens() + " screens"
                  + " prefetch = " + historyPrefetchMargin() + " messages"
                  + "/" + dialogPrefetchMargin() + " dialogs";
+        out[9] = "participants = " + maxParticipants() + "/"
+                + participantPageSize() + " prefetch = "
+                + participantPrefetchMargin();
         return out;
     }
 

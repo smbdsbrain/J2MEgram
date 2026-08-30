@@ -18,10 +18,16 @@ import java.io.ByteArrayInputStream;
 
 import tg.api.AuthCheck;
 import tg.api.Cached;
+import tg.api.ChatInfo;
+import tg.api.ChatAdminRightsDef;
+import tg.api.ChatDefaultPermissions;
+import tg.api.ChatParticipant;
+import tg.api.ChatParticipantPage;
 import tg.api.Dialog;
 import tg.api.DialogPage;
 import tg.api.DialogFilterDefinition;
 import tg.api.DialogFolderMatcher;
+import tg.api.DialogIndexSnapshot;
 import tg.api.DialogListState;
 import tg.api.FolderScanCursor;
 import tg.api.DiscussionInfo;
@@ -48,6 +54,12 @@ import tg.api.DownloadToken;
 import tg.api.PhotoInputStream;
 import tg.api.PhotoRef;
 import tg.api.Profile;
+import tg.api.InvitePreview;
+import tg.api.InviteResult;
+import tg.api.ExportedInviteLink;
+import tg.api.ExportedInviteLinkPage;
+import tg.api.JoinRequest;
+import tg.api.JoinRequestPage;
 import tg.api.Telegram;
 import tg.api.ThreadInfo;
 import tg.api.TopicWindow;
@@ -72,6 +84,7 @@ import tg.plat.RmsAuthKeyStore;
 import tg.plat.RmsCheck;
 import tg.plat.RmsAvatarCache;
 import tg.plat.RmsConversationCache;
+import tg.plat.RmsDialogIndex;
 import tg.plat.RmsDraftStore;
 import tg.plat.RmsOutgoingStore;
 import tg.plat.ReportUpload;
@@ -80,12 +93,14 @@ import tg.plat.TcpLogSink;
 import tg.ui.ChatScreen;
 import tg.ui.AvatarCache;
 import tg.ui.DialogListScreen;
+import tg.ui.DateTime;
 import tg.ui.EmojiText;
 import tg.ui.SettingsScreen;
 import tg.ui.TextScreen;
 import tg.ui.TouchContextListener;
 import tg.ui.TopicListScreen;
 import tg.ui.PhotoScreen;
+import tg.ui.ParticipantListScreen;
 import tg.ui.PollScreen;
 import tg.ui.ImageScaler;
 import tg.ui.JpegDecoder;
@@ -270,6 +285,42 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     private final Command cmdOpenAvatar = new Command("Open avatar", Command.SCREEN, 1);
     private final Command cmdEditProfile = new Command("Edit profile", Command.SCREEN, 1);
     private final Command cmdSaveProfile = new Command("Save", Command.SCREEN, 1);
+    private final Command cmdChatInfo = new Command("Chat info", Command.SCREEN, 3);
+    private final Command cmdMembers = new Command("Members", Command.SCREEN, 1);
+    private final Command cmdRemoved = new Command("Removed", Command.SCREEN, 2);
+    private final Command cmdInviteUser = new Command("Invite user", Command.SCREEN, 2);
+    private final Command cmdInviteSelected = new Command("Invite", Command.SCREEN, 1);
+    private final Command cmdJoinChat = new Command("Join", Command.SCREEN, 1);
+    private final Command cmdLeaveChat = new Command("Leave", Command.SCREEN, 4);
+    private final Command cmdJoinByLink = new Command("Join by link", Command.SCREEN, 4);
+    private final Command cmdCheckInvite = new Command("Check", Command.SCREEN, 1);
+    private final Command cmdImportInvite = new Command("Join", Command.SCREEN, 1);
+    private final Command cmdOpenInviteChat = new Command("Open info", Command.SCREEN, 1);
+    private final Command cmdMoreParticipants = new Command("More", Command.SCREEN, 4);
+    private final Command cmdParticipantActions = new Command("Actions", Command.ITEM, 1);
+    private final Command cmdSelectCommunityAction = new Command("Select", Command.ITEM, 1);
+    private final Command cmdConfirmCommunityAction = new Command("Confirm", Command.SCREEN, 1);
+    private final Command cmdDefaultPermissions =
+            new Command("Default permissions", Command.SCREEN, 3);
+    private final Command cmdSavePermissions = new Command("Save", Command.SCREEN, 1);
+    private final Command cmdSaveAdmin = new Command("Save admin", Command.SCREEN, 1);
+    private final Command cmdInviteLinks = new Command("Invite links", Command.SCREEN, 3);
+    private final Command cmdOpenInviteLink = new Command("Open", Command.ITEM, 1);
+    private final Command cmdCreateInviteLink = new Command("Create", Command.SCREEN, 2);
+    private final Command cmdSubmitInviteLink = new Command("Create", Command.SCREEN, 1);
+    private final Command cmdRevokeInviteLink = new Command("Revoke", Command.SCREEN, 3);
+    private final Command cmdConfirmRevokeInviteLink = new Command("Revoke", Command.SCREEN, 1);
+    private final Command cmdMoreInviteLinks = new Command("More", Command.SCREEN, 4);
+    private final Command cmdJoinRequests = new Command("Join requests", Command.SCREEN, 3);
+    private final Command cmdApproveRequest = new Command("Approve", Command.SCREEN, 1);
+    private final Command cmdRejectRequest = new Command("Reject", Command.SCREEN, 2);
+    private final Command cmdConfirmRejectRequest = new Command("Reject", Command.SCREEN, 1);
+    private final Command cmdMoreJoinRequests = new Command("More", Command.SCREEN, 4);
+    private final Command cmdNewTopic = new Command("New topic", Command.SCREEN, 1);
+    private final Command cmdTopicActions = new Command("Actions", Command.ITEM, 2);
+    private final Command cmdSelectTopicAction = new Command("Select", Command.ITEM, 1);
+    private final Command cmdSaveTopic = new Command("Save", Command.SCREEN, 1);
+    private final Command cmdConfirmDeleteTopic = new Command("Delete history", Command.SCREEN, 1);
 
     /** Long-press menu is native List UI, so touch-only devices can use it. */
     private List touchContextMenu;
@@ -332,6 +383,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     private RmsUpdateStateStore updateStateStore;
     private RmsAvatarCache avatarDiskCache;
     private RmsConversationCache conversationCache;
+    private RmsDialogIndex dialogIndex;
     private ConnectionConfig connectionConfig;
     private ConnectionDiagnostics connectionDiagnostics;
     private SettingsScreen settingsScreen;
@@ -363,6 +415,8 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     /** Rows after the two fixed Folders entries, excluding DialogFilterDefault. */
     private DialogFilterDefinition[] folderRows =
             new DialogFilterDefinition[0];
+    /** Cached definitions are useful offline but never writable. */
+    private boolean foldersCachedReadOnly;
     private DialogListScreen folderDialogScreen;
     private DialogListState folderDialogState;
     private Form folderEditor;
@@ -607,6 +661,79 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     private Profile currentProfile;
     private int profileAvatarIndex = -1;
     private boolean profilePhoto;
+
+    // ------------------------------------------ community management UI
+
+    private ChatInfo currentChatInfo;
+    private Peer communityPeer;
+    private Form chatInfoScreen;
+    private ParticipantListScreen participantScreen;
+    private ChatParticipant[] participantRows = new ChatParticipant[0];
+    private int participantFilter = ChatParticipantPage.MEMBERS;
+    private int participantWindowStart;
+    private int participantTotal;
+    private boolean participantPageInFlight;
+    private boolean participantsExhausted;
+    private boolean communityInvitePick;
+    private TextBox inviteLinkBox;
+    private InvitePreview invitePreview;
+    private Form invitePreviewScreen;
+    private List participantActionList;
+    private int[] participantActionKinds = new int[0];
+    private ChatParticipant actionParticipant;
+    private Form communityConfirm;
+    private int pendingCommunityAction;
+    private Peer pendingCommunityTarget;
+    private Form adminRightsForm;
+    private ChoiceGroup adminRightsChoices;
+    private int[] adminRightBits = new int[0];
+    private ChatParticipant editingAdmin;
+    private Form defaultPermissionsForm;
+    private ChoiceGroup defaultPermissionChoices;
+    private List exportedInviteList;
+    private ExportedInviteLink[] exportedInvites = new ExportedInviteLink[0];
+    private int exportedInviteTotal;
+    private boolean exportedInviteExhausted;
+    private boolean exportedInviteLoading;
+    private Form createInviteForm;
+    private TextField inviteTitleField;
+    private ChoiceGroup inviteRequestChoice;
+    private TextBox exportedInviteBox;
+    private Form revokeInviteConfirm;
+    private ExportedInviteLink pendingRevokeInvite;
+    private List joinRequestList;
+    private JoinRequest[] joinRequests = new JoinRequest[0];
+    private int joinRequestTotal;
+    private boolean joinRequestsExhausted;
+    private boolean joinRequestsLoading;
+    private Form rejectRequestConfirm;
+    private JoinRequest pendingJoinRequest;
+
+    private ChatInfo currentForumInfo;
+    private List topicActionList;
+    private int[] topicActionKinds = new int[0];
+    private ForumTopic actionTopic;
+    private TextBox topicTitleBox;
+    private Form deleteTopicConfirm;
+
+    private static final int TOPIC_RENAME = 1;
+    private static final int TOPIC_CLOSE = 2;
+    private static final int TOPIC_REOPEN = 3;
+    private static final int TOPIC_PIN = 4;
+    private static final int TOPIC_UNPIN = 5;
+    private static final int TOPIC_HIDE = 6;
+    private static final int TOPIC_UNHIDE = 7;
+    private static final int TOPIC_DELETE = 8;
+
+    private static final int COMMUNITY_INVITE = 1;
+    private static final int COMMUNITY_KICK = 2;
+    private static final int COMMUNITY_BAN = 3;
+    private static final int COMMUNITY_UNBAN = 4;
+    private static final int COMMUNITY_LEAVE = 5;
+    private static final int COMMUNITY_JOIN = 6;
+    private static final int COMMUNITY_PROMOTE = 7;
+    private static final int COMMUNITY_EDIT_ADMIN = 8;
+    private static final int COMMUNITY_DEMOTE = 9;
     private String connectionLabel = "idle";
     private String updateLabel = "stopped";
     /** Incoming live messages below the viewport of the current chat. */
@@ -616,6 +743,9 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     /** What the store already holds for {@link #composer}; same three threads. */
     private volatile String lastSavedDraft = "";
     private volatile boolean snapshotRefreshScheduled;
+    private volatile boolean dialogIndexDirtyPending;
+    /** Guards an older RMS callback from clearing a newer dirty signal. */
+    private volatile int dialogIndexDirtyEpoch;
 
     /** Initial/cached dialog refresh waiting for syncWorker. */
     private boolean pendingDialogsRefresh;
@@ -851,6 +981,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         updateStateStore = new RmsUpdateStateStore();
         avatarDiskCache = new RmsAvatarCache();
         conversationCache = new RmsConversationCache();
+        dialogIndex = new RmsDialogIndex();
         connectionConfig = new ConnectionConfig();
         appSettings = new AppSettings();
         appSettings.load(store);
@@ -867,6 +998,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         telegram.accountWipe().add("drafts", draftStore);
         telegram.accountWipe().add("avatars", avatarDiskCache);
         telegram.accountWipe().add("chat cache", conversationCache);
+        telegram.accountWipe().add("dialog index", dialogIndex);
         // The three producers that are on none of this client's own threads:
         // the reconnect loop, the outbox drain and the update queue each raise
         // these from wherever they happen to be. Posted, not applied, for the
@@ -1038,6 +1170,9 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             // Everything above the root was popped, so a topic list held here
             // is unreachable and its window with it.
             topicScreen = null;
+            participantScreen = null;
+            participantRows = new ChatParticipant[0];
+            participantPageInFlight = false;
         }
         else if (topicScreen != null && screen == topicScreen)
         {
@@ -1170,7 +1305,15 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         }
         else if (c == cmdRefresh)
         {
-            if (d == foldersList)
+            if (d == chatInfoScreen && communityPeer != null)
+            {
+                showChatInfo(communityPeer, true);
+            }
+            else if (d == participantScreen)
+            {
+                loadParticipants(true, true);
+            }
+            else if (d == foldersList)
             {
                 loadFolders(true);
             }
@@ -1202,6 +1345,28 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         else if (c == cmdMoreTopics)
         {
             loadMoreTopics(true);
+        }
+        else if (c == cmdNewTopic && d == topicScreen)
+        {
+            showTopicTitleEditor(null);
+        }
+        else if (c == cmdTopicActions && d == topicScreen)
+        {
+            showTopicActions();
+        }
+        else if ((c == cmdSelectTopicAction
+                || (c == List.SELECT_COMMAND && d == topicActionList))
+                && d == topicActionList)
+        {
+            selectTopicAction();
+        }
+        else if (c == cmdSaveTopic && d == topicTitleBox)
+        {
+            saveTopicTitle();
+        }
+        else if (c == cmdConfirmDeleteTopic && d == deleteTopicConfirm)
+        {
+            performTopicAction(TOPIC_DELETE);
         }
         else if (c == cmdWrite)
         {
@@ -1264,7 +1429,12 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         else if (c == cmdFindChat)
         {
             folderPeerPickMode = 0;
+            communityInvitePick = false;
             showSearchBox(d == forwardList);
+        }
+        else if (c == cmdJoinByLink)
+        {
+            showInviteLinkBox();
         }
         else if (c == cmdFolders)
         {
@@ -1358,6 +1528,14 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             openSearchResult();
         }
+        else if (c == cmdInviteSelected && d == searchResults)
+        {
+            Peer target = selectedSearchPeer();
+            if (target != null && target.kind == Peer.USER)
+            {
+                confirmCommunityAction(COMMUNITY_INVITE, target);
+            }
+        }
         else if (c == cmdForwardToResult && d == searchResults)
         {
             Peer destination = selectedSearchPeer();
@@ -1387,6 +1565,124 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         else if (c == cmdMyProfile)
         {
             showProfile(telegram.peers().self(), dialogList);
+        }
+        else if (c == cmdChatInfo)
+        {
+            Peer target = communityPeerFor(d);
+            if (target != null) { showChatInfo(target, false); }
+        }
+        else if (c == cmdMembers && d == chatInfoScreen)
+        {
+            showParticipants(ChatParticipantPage.MEMBERS);
+        }
+        else if (c == cmdRemoved && d == chatInfoScreen)
+        {
+            showParticipants(ChatParticipantPage.REMOVED);
+        }
+        else if (c == cmdInviteUser && d == chatInfoScreen)
+        {
+            showInviteUserSearch();
+        }
+        else if (c == cmdDefaultPermissions && d == chatInfoScreen)
+        {
+            showDefaultPermissions();
+        }
+        else if (c == cmdSavePermissions && d == defaultPermissionsForm)
+        {
+            saveDefaultPermissions();
+        }
+        else if (c == cmdSaveAdmin && d == adminRightsForm)
+        {
+            saveAdminRights();
+        }
+        else if (c == cmdInviteLinks && d == chatInfoScreen)
+        {
+            showInviteLinks();
+        }
+        else if ((c == cmdOpenInviteLink
+                || (c == List.SELECT_COMMAND && d == exportedInviteList))
+                && d == exportedInviteList)
+        {
+            openSelectedInviteLink();
+        }
+        else if (c == cmdCreateInviteLink && d == exportedInviteList)
+        {
+            showCreateInviteLink();
+        }
+        else if (c == cmdSubmitInviteLink && d == createInviteForm)
+        {
+            submitInviteLink();
+        }
+        else if (c == cmdRevokeInviteLink && d == exportedInviteList)
+        {
+            confirmRevokeInviteLink();
+        }
+        else if (c == cmdConfirmRevokeInviteLink && d == revokeInviteConfirm)
+        {
+            revokeInviteLink();
+        }
+        else if (c == cmdMoreInviteLinks && d == exportedInviteList)
+        {
+            loadInviteLinks(false, true);
+        }
+        else if (c == cmdJoinRequests && d == chatInfoScreen)
+        {
+            showJoinRequests();
+        }
+        else if (c == cmdApproveRequest && d == joinRequestList)
+        {
+            decideSelectedJoinRequest(true);
+        }
+        else if (c == cmdRejectRequest && d == joinRequestList)
+        {
+            confirmRejectJoinRequest();
+        }
+        else if (c == cmdConfirmRejectRequest && d == rejectRequestConfirm)
+        {
+            decideJoinRequest(pendingJoinRequest, false);
+        }
+        else if (c == cmdMoreJoinRequests && d == joinRequestList)
+        {
+            loadJoinRequests(false, true);
+        }
+        else if (c == cmdLeaveChat && d == chatInfoScreen)
+        {
+            confirmCommunityAction(COMMUNITY_LEAVE, null);
+        }
+        else if (c == cmdJoinChat && d == chatInfoScreen)
+        {
+            confirmCommunityAction(COMMUNITY_JOIN, null);
+        }
+        else if (c == cmdMoreParticipants && d == participantScreen)
+        {
+            loadParticipants(false, true);
+        }
+        else if (c == cmdParticipantActions && d == participantScreen)
+        {
+            showParticipantActions(participantScreen.selectedParticipant());
+        }
+        else if ((c == cmdSelectCommunityAction
+                || (c == List.SELECT_COMMAND && d == participantActionList))
+                && d == participantActionList)
+        {
+            selectParticipantAction();
+        }
+        else if (c == cmdConfirmCommunityAction && d == communityConfirm)
+        {
+            performCommunityAction();
+        }
+        else if (c == cmdCheckInvite && d == inviteLinkBox)
+        {
+            checkInviteLink();
+        }
+        else if (c == cmdImportInvite && d == invitePreviewScreen)
+        {
+            importInviteLink();
+        }
+        else if (c == cmdOpenInviteChat && d == invitePreviewScreen
+                && invitePreview != null && invitePreview.peer != null)
+        {
+            showChatInfo(invitePreview.peer, false);
         }
         else if (c == cmdProfile)
         {
@@ -1572,12 +1868,9 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             title = "Chat options";
             actions[count++] = cmdOpen;
             Dialog selected = ((DialogListScreen) source).selectedDialog();
-            boolean customShared = source == folderDialogScreen
-                    && folderDialogState != null
-                    && folderDialogState.kind == DialogListState.CUSTOM
-                    && folderDialogState.filter != null
-                    && !folderDialogState.filter.editable();
-            if (selected != null && !customShared)
+            boolean customReadOnly = source == folderDialogScreen
+                    && folderReadOnly(folderDialogState);
+            if (selected != null && !customReadOnly)
             {
                 actions[count++] = selected.pinned ? cmdUnpin : cmdPin;
             }
@@ -1586,7 +1879,11 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 actions[count++] = selected.folderId == 1
                         ? cmdUnarchive : cmdArchive;
             }
-            actions[count++] = cmdProfile;
+            Peer selectedPeer = ((DialogListScreen) source).selectedPeer();
+            actions[count++] = selectedPeer != null
+                    && (selectedPeer.kind == Peer.CHAT
+                            || selectedPeer.kind == Peer.CHANNEL)
+                            ? cmdChatInfo : cmdProfile;
             actions[count++] = cmdFindChat;
             actions[count++] = cmdBack;
         }
@@ -1594,6 +1891,17 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             title = "Topic options";
             actions[count++] = cmdOpenTopic;
+            if (currentForumInfo != null
+                    && currentForumInfo.capabilities.canCreateTopics)
+            {
+                actions[count++] = cmdNewTopic;
+            }
+            if (currentForumInfo != null
+                    && currentForumInfo.capabilities.canManageTopics
+                    && topicScreen.selectedTopic() != null)
+            {
+                actions[count++] = cmdTopicActions;
+            }
             actions[count++] = cmdRefresh;
             actions[count++] = cmdMoreTopics;
             actions[count++] = cmdBack;
@@ -1629,7 +1937,10 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             actions[count++] = cmdEntityActions;
             actions[count++] = cmdForward;
             actions[count++] = cmdDeleteMessage;
-            actions[count++] = cmdProfile;
+            actions[count++] = openPeer != null
+                    && (openPeer.kind == Peer.CHAT
+                            || openPeer.kind == Peer.CHANNEL)
+                            ? cmdChatInfo : cmdProfile;
             actions[count++] = cmdWrite;
             actions[count++] = cmdBack;
         }
@@ -1644,6 +1955,13 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             title = "Reaction option";
             actions[count++] = cmdSelectReaction;
+            actions[count++] = cmdBack;
+        }
+        else if (source == participantScreen)
+        {
+            title = "Member options";
+            actions[count++] = cmdParticipantActions;
+            actions[count++] = cmdMoreParticipants;
             actions[count++] = cmdBack;
         }
         else if (source == photoScreen)
@@ -1719,6 +2037,12 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             reactionActorsScreen = null;
             reactionActorsPeer = null;
             reactionActorsMessageId = 0;
+        }
+        if (from == participantScreen)
+        {
+            participantScreen = null;
+            participantRows = new ChatParticipant[0];
+            participantPageInFlight = false;
         }
         if (navigation.isRoot())
         {
@@ -2336,6 +2660,8 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         topicScreen = null;
         initialRefreshRetry.cancel();
         snapshotRefreshScheduled = false;
+        dialogIndexDirtyPending = false;
+        dialogIndexDirtyEpoch = 0;
         snapshotRefreshRetry.cancel();
         reactionActorsRetry.cancel();
         localReads.clear();
@@ -2352,6 +2678,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         foldersList = null;
         folderDefinitions = new DialogFilterDefinition[0];
         folderRows = new DialogFilterDefinition[0];
+        foldersCachedReadOnly = false;
         folderDialogScreen = null;
         folderDialogState = null;
         folderEditor = null;
@@ -2407,6 +2734,44 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         currentProfile = null;
         profileAvatarIndex = -1;
         profilePhoto = false;
+        currentChatInfo = null;
+        communityPeer = null;
+        chatInfoScreen = null;
+        participantScreen = null;
+        participantRows = new ChatParticipant[0];
+        participantPageInFlight = false;
+        communityInvitePick = false;
+        inviteLinkBox = null;
+        invitePreview = null;
+        invitePreviewScreen = null;
+        participantActionList = null;
+        participantActionKinds = new int[0];
+        actionParticipant = null;
+        communityConfirm = null;
+        pendingCommunityAction = 0;
+        pendingCommunityTarget = null;
+        adminRightsForm = null;
+        adminRightsChoices = null;
+        adminRightBits = new int[0];
+        editingAdmin = null;
+        defaultPermissionsForm = null;
+        defaultPermissionChoices = null;
+        exportedInviteList = null;
+        exportedInvites = new ExportedInviteLink[0];
+        createInviteForm = null;
+        exportedInviteBox = null;
+        revokeInviteConfirm = null;
+        pendingRevokeInvite = null;
+        joinRequestList = null;
+        joinRequests = new JoinRequest[0];
+        rejectRequestConfirm = null;
+        pendingJoinRequest = null;
+        currentForumInfo = null;
+        topicActionList = null;
+        topicActionKinds = new int[0];
+        actionTopic = null;
+        topicTitleBox = null;
+        deleteTopicConfirm = null;
 
         avatarCache.clear();
 
@@ -2593,7 +2958,10 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
 
             public Object run() throws Exception
             {
-                return telegram.getDialogs(MemoryBudget.dialogPageSize());
+                DialogPage page = telegram.getDialogs(
+                        MemoryBudget.dialogPageSize());
+                indexDialogPage(page);
+                return page;
             }
         }, new Worker.Callback()
         {
@@ -2685,6 +3053,8 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             dialogList.addCommand(cmdMoreDialogs);
             dialogList.addCommand(cmdTopOfList);
             dialogList.addCommand(cmdFindChat);
+            dialogList.addCommand(cmdChatInfo);
+            dialogList.addCommand(cmdJoinByLink);
             dialogList.addCommand(cmdFilter);
             dialogList.addCommand(cmdFolders);
             dialogList.addCommand(cmdSaved);
@@ -2789,6 +3159,12 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
      */
     private void goToTopOfList()
     {
+        if (folderDialogScreen != null && folderDialogState != null
+                && navigation.current() == folderDialogScreen)
+        {
+            reloadFolderDialogs();
+            return;
+        }
         if (dialogList == null) { return; }
         dialogFilter = "";
         dialogOrderStale = false;
@@ -2817,7 +3193,8 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             searchBox.setString("");
         }
         searchBox.setTitle(forForward ? "Find a chat to forward to"
-                : "Find a chat on Telegram");
+                : (communityInvitePick ? "Find a user to invite"
+                        : "Find a chat on Telegram"));
         pushScreen(searchBox);
     }
 
@@ -2832,6 +3209,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             return;
         }
         final boolean forForward = searchForForward;
+        final boolean invitePick = communityInvitePick;
         showBusy("Search", "Searching Telegram for \"" + query + "\"...");
         final AsyncScope.Token asked = scope.capture();
         boolean submitted = worker.submit(new Worker.Task()
@@ -2850,7 +3228,8 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                     dropStale("contacts.search");
                     return;
                 }
-                showSearchResults(query, (Peer[]) result, forForward);
+                showSearchResults(query, (Peer[]) result, forForward,
+                        invitePick);
             }
 
             public void onFailure(Throwable error)
@@ -2872,10 +3251,13 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         }
     }
 
-    private void showSearchResults(String query, Peer[] found, boolean forForward)
+    private void showSearchResults(String query, Peer[] found,
+                                   boolean forForward, boolean invitePick)
     {
-        searchPeers = found == null ? new Peer[0] : found;
+        searchPeers = invitePick ? userPeers(found)
+                : (found == null ? new Peer[0] : found);
         searchForForward = forForward;
+        communityInvitePick = invitePick;
         searchResults = new List("Results for " + query, List.IMPLICIT);
         for (int i = 0; i < searchPeers.length; i++)
         {
@@ -2887,10 +3269,12 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             // ask Telegram, so "no chat by that name" is a claim it can make.
             searchResults.append("(Telegram found no chat by that name)", null);
         }
-        Command resultAction = folderPeerPickMode != 0 ? cmdAddFolderPeer
-                : (forForward ? cmdForwardToResult : cmdOpenResult);
+        Command resultAction = invitePick ? cmdInviteSelected
+                : (folderPeerPickMode != 0 ? cmdAddFolderPeer
+                        : (forForward ? cmdForwardToResult : cmdOpenResult));
         searchResults.addCommand(resultAction);
         searchResults.setSelectCommand(resultAction);
+        if (!communityInvitePick) { searchResults.addCommand(cmdChatInfo); }
         searchResults.addCommand(cmdBack);
         searchResults.setCommandListener(this);
         // Replaces the query box rather than stacking on it: Back from the
@@ -2905,6 +3289,22 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         // like a crash on the handset and left nothing in the crash log,
         // because nothing had thrown.
         replaceScreen(searchResults);
+    }
+
+    private static Peer[] userPeers(Peer[] found)
+    {
+        if (found == null || found.length == 0) { return new Peer[0]; }
+        Peer[] out = new Peer[found.length];
+        int count = 0;
+        for (int i = 0; i < found.length; i++)
+        {
+            if (found[i] != null && found[i].kind == Peer.USER
+                    && !found[i].self) { out[count++] = found[i]; }
+        }
+        if (count == out.length) { return out; }
+        Peer[] trimmed = new Peer[count];
+        System.arraycopy(out, 0, trimmed, 0, count);
+        return trimmed;
     }
 
     /** @return the selected result, or null when the row is the empty notice */
@@ -3378,6 +3778,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         // RecordEnvelope: 0 matches, it does not exclude.
         if (outgoingStore != null) { outgoingStore.bindAccount(id); }
         if (draftStore != null) { draftStore.bindAccount(id); }
+        if (dialogIndex != null) { dialogIndex.bindAccount(id, Dc.isTest()); }
         return id;
     }
 
@@ -3412,6 +3813,253 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             Diag.warn("dialog cache save failed: " + shortMessage(t));
         }
+    }
+
+    /** Called only from a Worker task after an authoritative dialog page. */
+    private void indexDialogPage(DialogPage page)
+    {
+        if (page == null || dialogIndex == null) { return; }
+        long accountId = cacheAccountId();
+        if (accountId == 0) { return; }
+        try
+        {
+            int dirtyEpoch = dialogIndexDirtyEpoch;
+            if (dialogIndexDirtyPending)
+            {
+                dialogIndex.markDirty(accountId, Dc.isTest());
+                if (dialogIndexDirtyEpoch == dirtyEpoch)
+                {
+                    dialogIndexDirtyPending = false;
+                }
+            }
+            dialogIndex.upsertPage(accountId, Dc.isTest(), page.dialogs, 0);
+        }
+        catch (Throwable t)
+        {
+            // RMS is an acceleration layer. Network-backed lists remain usable
+            // and custom folders keep their pre-index server-scan fallback.
+            Diag.warn("dialog index page failed: " + shortMessage(t));
+        }
+    }
+
+    private void flushDialogIndexDirty()
+    {
+        if (!dialogIndexDirtyPending || dialogIndex == null) { return; }
+        final long accountId = cacheAccountId();
+        if (accountId == 0) { return; }
+        final int dirtyEpoch = dialogIndexDirtyEpoch;
+        final AsyncScope.Token asked = scope.capture();
+        boolean submitted = syncWorker.submit(new Worker.Task()
+        {
+            public String name() { return "RMS dialog index dirty"; }
+            public Object run() throws Exception
+            {
+                dialogIndex.markDirty(accountId, Dc.isTest());
+                return null;
+            }
+        }, new Worker.Callback()
+        {
+            public void onSuccess(Object ignored)
+            {
+                if (asked.sameSession() && dialogIndexDirtyEpoch == dirtyEpoch)
+                {
+                    dialogIndexDirtyPending = false;
+                }
+            }
+            public void onFailure(Throwable error)
+            {
+                if (asked.sameSession())
+                {
+                    Diag.warn("dialog index dirty marker failed: "
+                            + shortMessage(error));
+                }
+            }
+        });
+        if (!submitted)
+        {
+            // Keep the latch set. The next reconciliation or authoritative
+            // dialog page will retry the durable dirty marker.
+            Diag.info("dialog index dirty marker deferred");
+        }
+    }
+
+    private void noteDialogIndexDirty()
+    {
+        dialogIndexDirtyPending = true;
+        dialogIndexDirtyEpoch++;
+        if (dialogIndexDirtyEpoch <= 0) { dialogIndexDirtyEpoch = 1; }
+    }
+
+    /**
+     * Persist the dialog rows that an update changed. If the retained root
+     * window cannot fully describe one of them, downgrade the index to dirty
+     * instead of letting an old exact snapshot drive folder membership.
+     */
+    private boolean reconcileDialogIndex(final UpdateBatch batch)
+    {
+        if (batch == null) { return true; }
+        Peer[] changed = batch.dialogPeers == null
+                ? new Peer[0] : batch.dialogPeers;
+        if (changed.length == 0 && !batch.dialogIndexDirty) { return true; }
+        Dialog[] rows = new Dialog[changed.length];
+        int count = 0;
+        // A generation-zero live upsert cannot safely coexist with an active
+        // recovery generation: completing that generation would discard it.
+        // Force the bounded scan to restart even when the root row is known.
+        boolean generationActive = folderDialogState != null
+                && folderDialogState.kind == DialogListState.CUSTOM
+                && folderDialogState.indexGeneration > 0
+                && !folderDialogState.totalKnown;
+        boolean complete = !batch.dialogIndexDirty && !generationActive;
+        for (int i = 0; i < changed.length; i++)
+        {
+            int at = findDialog(changed[i]);
+            if (at < 0)
+            {
+                complete = false;
+                continue;
+            }
+            rows[count++] = copyIndexDialog(dialogs[at]);
+        }
+        final Dialog[] saved = new Dialog[count];
+        System.arraycopy(rows, 0, saved, 0, count);
+        final boolean dirty = !complete;
+        if (dirty) { noteDialogIndexDirty(); }
+
+        long bound = cacheAccountId();
+        if (dialogIndex == null || bound == 0)
+        {
+            return reconcileOpenCustomFolder(changed) && complete;
+        }
+        final long accountId = bound;
+        final int dirtyEpoch = dialogIndexDirtyEpoch;
+        final AsyncScope.Token asked = scope.capture();
+        boolean submitted = syncWorker.submit(new Worker.Task()
+        {
+            public String name() { return "RMS dialog live reconciliation"; }
+            public Object run() throws Exception
+            {
+                if (dirty)
+                {
+                    dialogIndex.markDirty(accountId, Dc.isTest());
+                }
+                if (saved.length > 0)
+                {
+                    dialogIndex.upsertPage(accountId, Dc.isTest(), saved, 0);
+                }
+                return null;
+            }
+        }, new Worker.Callback()
+        {
+            public void onSuccess(Object ignored)
+            {
+                if (asked.sameSession() && dirty
+                        && dialogIndexDirtyEpoch == dirtyEpoch)
+                {
+                    dialogIndexDirtyPending = false;
+                }
+            }
+
+            public void onFailure(Throwable error)
+            {
+                if (!asked.sameSession())
+                {
+                    dropStale("RMS dialog live reconciliation");
+                    return;
+                }
+                noteDialogIndexDirty();
+                Diag.warn("dialog index reconciliation failed: "
+                        + shortMessage(error));
+            }
+        });
+        if (!submitted && !dirty)
+        {
+            // The changed row is known, but not yet durable. A recovery scan is
+            // the safe retry because Worker deliberately has no hidden queue.
+            noteDialogIndexDirty();
+        }
+        return reconcileOpenCustomFolder(changed) && complete;
+    }
+
+    /** Apply fully represented membership changes without reopening the screen. */
+    private boolean reconcileOpenCustomFolder(Peer[] changed)
+    {
+        DialogListState state = folderDialogState;
+        if (state == null || folderDialogScreen == null
+                || display.getCurrent() != folderDialogScreen
+                || state.kind != DialogListState.CUSTOM)
+        {
+            return true;
+        }
+        if (state.above > 0) { return false; }
+        Peer selected = folderDialogScreen.selectedPeer();
+        int now = (int) (System.currentTimeMillis() / 1000L);
+        for (int i = 0; i < changed.length; i++)
+        {
+            int at = findDialog(changed[i]);
+            if (at < 0) { return false; }
+            Dialog row = dialogs[at];
+            boolean contained = findDialog(state.dialogs, changed[i]) >= 0;
+            boolean matches = DialogFolderMatcher.matches(row, state.filter,
+                    now);
+            state.dialogs = removeDialog(state.dialogs, changed[i]);
+            if (matches)
+            {
+                state.dialogs = mergeFolderDialogs(state.dialogs,
+                        new Dialog[] { row }, state.filter);
+            }
+            if (state.totalKnown && contained != matches)
+            {
+                state.total += matches ? 1 : -1;
+                if (state.total < 0) { state.total = 0; }
+            }
+        }
+        state.exhausted = state.totalKnown
+                && state.dialogs.length >= state.total;
+        showFolderDialogs(selected);
+        return true;
+    }
+
+    private static int findDialog(Dialog[] values, Peer peer)
+    {
+        for (int i = 0; values != null && i < values.length; i++)
+        {
+            if (values[i] != null && samePeer(values[i].peer, peer)) { return i; }
+        }
+        return -1;
+    }
+
+    private static Dialog copyIndexDialog(Dialog source)
+    {
+        Dialog out = new Dialog();
+        if (source == null) { return out; }
+        if (source.peer != null)
+        {
+            Peer peer = new Peer(source.peer.kind, source.peer.id);
+            peer.accessHash = source.peer.accessHash;
+            peer.title = source.peer.title;
+            peer.username = source.peer.username;
+            peer.self = source.peer.self;
+            peer.contact = source.peer.contact;
+            peer.bot = source.peer.bot;
+            peer.broadcast = source.peer.broadcast;
+            peer.megagroup = source.peer.megagroup;
+            peer.forum = source.peer.forum;
+            out.peer = peer;
+        }
+        out.topMessageId = source.topMessageId;
+        out.unreadCount = source.unreadCount;
+        out.unreadMark = source.unreadMark;
+        out.pinned = source.pinned;
+        out.readInboxMaxId = source.readInboxMaxId;
+        out.readOutboxMaxId = source.readOutboxMaxId;
+        out.channelPts = source.channelPts;
+        out.folderId = source.folderId;
+        out.muteUntil = source.muteUntil;
+        out.lastMessage = source.lastMessage;
+        out.date = source.date;
+        out.lastMessageOutgoing = source.lastMessageOutgoing;
+        return out;
     }
 
     private boolean showCachedDialogsOffline()
@@ -3541,6 +4189,24 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         int scanned;
         int total;
         boolean totalKnown;
+        DialogIndexSnapshot snapshot;
+        boolean indexPage;
+        int generation;
+        int generationEpoch;
+        boolean generationInvalidated;
+        boolean indexFailed;
+    }
+
+    private static final class FolderDefinitionsLoad
+    {
+        DialogFilterDefinition[] filters = new DialogFilterDefinition[0];
+        boolean cached;
+    }
+
+    private static final class ForumLoadResult
+    {
+        ChatInfo info;
+        ForumTopicPage page;
     }
 
     private void showFolders()
@@ -3563,11 +4229,14 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             list.append(title, null);
         }
         list.addCommand(cmdOpenFolder);
-        list.addCommand(cmdNewFolder);
-        list.addCommand(cmdEditFolder);
-        list.addCommand(cmdFolderUp);
-        list.addCommand(cmdFolderDown);
-        list.addCommand(cmdDeleteFolder);
+        if (!foldersCachedReadOnly)
+        {
+            list.addCommand(cmdNewFolder);
+            list.addCommand(cmdEditFolder);
+            list.addCommand(cmdFolderUp);
+            list.addCommand(cmdFolderDown);
+            list.addCommand(cmdDeleteFolder);
+        }
         list.addCommand(cmdRefresh);
         list.addCommand(cmdBack);
         list.setCommandListener(this);
@@ -3583,7 +4252,53 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             public String name() { return "messages.getDialogFilters"; }
             public Object run() throws Exception
             {
-                return telegram.getDialogFilters();
+                FolderDefinitionsLoad loaded = new FolderDefinitionsLoad();
+                long accountId = cacheAccountId();
+                try
+                {
+                    loaded.filters = telegram.getDialogFilters();
+                    loaded.cached = false;
+                    if (accountId != 0 && dialogIndex != null)
+                    {
+                        try
+                        {
+                            dialogIndex.saveFilters(accountId, Dc.isTest(),
+                                    loaded.filters);
+                        }
+                        catch (Throwable cacheError)
+                        {
+                            Diag.warn("dialog filter index save failed: "
+                                    + shortMessage(cacheError));
+                        }
+                    }
+                    return loaded;
+                }
+                catch (Throwable networkError)
+                {
+                    if (accountId != 0 && dialogIndex != null)
+                    {
+                        try
+                        {
+                            loaded.filters = dialogIndex.loadFilters(accountId,
+                                    Dc.isTest());
+                            if (loaded.filters.length > 0)
+                            {
+                                loaded.cached = true;
+                                return loaded;
+                            }
+                        }
+                        catch (Throwable cacheError)
+                        {
+                            Diag.warn("cached dialog filters unavailable: "
+                                    + shortMessage(cacheError));
+                        }
+                    }
+                    if (networkError instanceof Exception)
+                    {
+                        throw (Exception) networkError;
+                    }
+                    throw new Exception(networkError.toString());
+                }
             }
         }, new Worker.Callback()
         {
@@ -3594,7 +4309,9 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                     dropStale("messages.getDialogFilters");
                     return;
                 }
-                folderDefinitions = (DialogFilterDefinition[]) result;
+                FolderDefinitionsLoad loaded = (FolderDefinitionsLoad) result;
+                folderDefinitions = loaded.filters;
+                foldersCachedReadOnly = loaded.cached;
                 int count = 0;
                 for (int i = 0; i < folderDefinitions.length; i++)
                 {
@@ -3658,6 +4375,12 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                     {
                         reloadFolderDialogs();
                     }
+                    if (loaded.cached && navigation.current() == fresh)
+                    {
+                        showAlert("Showing cached folders. Editing is disabled"
+                                + " until Telegram is reachable.",
+                                AlertType.INFO, fresh);
+                    }
                 }
             }
 
@@ -3694,6 +4417,13 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         return index >= 0 && index < folderRows.length ? folderRows[index] : null;
     }
 
+    private boolean folderReadOnly(DialogListState state)
+    {
+        return state != null && state.kind == DialogListState.CUSTOM
+                && (foldersCachedReadOnly || state.filter == null
+                        || !state.filter.editable());
+    }
+
     private void openSelectedFolder()
     {
         if (foldersList == null) { return; }
@@ -3719,8 +4449,10 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         screen.addCommand(cmdOpen);
         screen.addCommand(cmdRefresh);
         screen.addCommand(cmdMoreDialogs);
+        screen.addCommand(cmdTopOfList);
         screen.addCommand(cmdFindChat);
         screen.addCommand(cmdProfile);
+        screen.addCommand(cmdChatInfo);
         screen.addCommand(cmdBack);
         screen.setCommandListener(this);
         screen.setTouchContextListener(touchContextListener);
@@ -3733,11 +4465,8 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             public void onDialogSelectionChanged(Dialog value)
             {
-                boolean shared = folderDialogState != null
-                        && folderDialogState.kind == DialogListState.CUSTOM
-                        && folderDialogState.filter != null
-                        && !folderDialogState.filter.editable();
-                updateDialogActionCommands(screen, value, shared);
+                updateDialogActionCommands(screen, value,
+                        folderReadOnly(folderDialogState));
             }
         });
         screen.setViewportListener(new DialogListScreen.ViewportListener()
@@ -3760,7 +4489,84 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         folderDialogScreen.setTitle(folderDialogState.title);
         folderDialogScreen.setDialogs(new Dialog[0], 0, 0, null);
         folderDialogScreen.setEmptyText("Loading...");
-        loadMoreFolderDialogs(false);
+        if (folderDialogState.kind == DialogListState.CUSTOM)
+        {
+            loadCachedFolder(folderDialogState, folderDialogScreen);
+        }
+        else { loadMoreFolderDialogs(false); }
+    }
+
+    private void loadCachedFolder(final DialogListState state,
+            final DialogListScreen screen)
+    {
+        final long accountId = cacheAccountId();
+        if (accountId == 0 || dialogIndex == null)
+        {
+            state.indexFailed = true;
+            loadMoreFolderDialogs(false);
+            return;
+        }
+        state.loading = true;
+        screen.setStatus("loading cached folder...", updateLabel);
+        final DialogFilterDefinition filter = state.filter.copy();
+        final AsyncScope.Token asked = scope.capture();
+        boolean submitted = syncWorker.submit(new Worker.Task()
+        {
+            public String name() { return "RMS folder query"; }
+            public Object run() throws Exception
+            {
+                return dialogIndex.query(accountId, Dc.isTest(), filter,
+                        (int) (System.currentTimeMillis() / 1000L));
+            }
+        }, new Worker.Callback()
+        {
+            public void onSuccess(Object result)
+            {
+                if (!asked.sameSession() || folderDialogState != state
+                        || folderDialogScreen != screen)
+                {
+                    dropStale("RMS folder query");
+                    return;
+                }
+                state.loading = false;
+                DialogIndexSnapshot snapshot = (DialogIndexSnapshot) result;
+                state.dialogs = snapshot.dialogs;
+                state.total = snapshot.total;
+                boolean trusted = snapshot.exact && !dialogIndexDirtyPending;
+                state.totalKnown = trusted;
+                state.cached = true;
+                if (trusted)
+                {
+                    state.explicitLoaded = true;
+                    state.indexGeneration = snapshot.generation;
+                    state.mainCursor.exhausted = true;
+                    state.archiveCursor.exhausted = true;
+                    state.exhausted = state.dialogs.length >= state.total;
+                }
+                showFolderDialogs(screen.selectedPeer());
+                if (!trusted) { loadMoreFolderDialogs(false); }
+            }
+
+            public void onFailure(Throwable error)
+            {
+                if (!asked.sameSession() || folderDialogState != state)
+                {
+                    dropStale("RMS folder query");
+                    return;
+                }
+                state.loading = false;
+                state.indexFailed = true;
+                Diag.warn("dialog index unavailable; server scan fallback: "
+                        + shortMessage(error));
+                loadMoreFolderDialogs(false);
+            }
+        });
+        if (!submitted)
+        {
+            state.loading = false;
+            state.indexFailed = true;
+            loadMoreFolderDialogs(false);
+        }
     }
 
     private void showFolderDialogs(Peer selected)
@@ -3780,8 +4586,9 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             int first = state.dialogs.length == 0 ? 0 : state.above + 1;
             int last = state.above + state.dialogs.length;
             folderDialogScreen.setWindowLabel(first + "-" + last + "/?");
-            folderDialogScreen.setStatus("scanned " + state.scanned + " chats",
-                    updateLabel);
+            String status = state.cached ? "cached/partial; " : "";
+            folderDialogScreen.setStatus(status + "scanned " + state.scanned
+                    + " chats", updateLabel);
         }
         else
         {
@@ -3794,8 +4601,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         }
         folderDialogScreen.setDialogs(state.dialogs, state.above,
                 Math.max(state.total, state.above + state.dialogs.length), selected);
-        boolean shared = state.kind == DialogListState.CUSTOM
-                && state.filter != null && !state.filter.editable();
+        boolean shared = folderReadOnly(state);
         updateDialogActionCommands(folderDialogScreen,
                 folderDialogScreen.selectedDialog(), shared);
         loadVisibleAvatars();
@@ -3834,6 +4640,15 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 ? null : state.filter.copy();
         final FolderScanCursor main = copyCursor(state.mainCursor);
         final FolderScanCursor archived = copyCursor(state.archiveCursor);
+        final int generation = state.indexGeneration;
+        final int generationEpoch = state.indexGenerationEpoch;
+        final boolean indexPage = state.kind == DialogListState.CUSTOM
+                && state.totalKnown && !state.indexFailed
+                && main.exhausted && archived.exhausted
+                && state.dialogs.length > 0
+                && state.above + state.dialogs.length < state.total;
+        final Dialog indexOffset = indexPage
+                ? state.dialogs[state.dialogs.length - 1] : null;
         final AsyncScope.Token asked = scope.capture();
         Worker lane = manual ? worker : syncWorker;
         boolean submitted = lane.submit(new Worker.Task()
@@ -3848,13 +4663,29 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             {
                 if (state.kind == DialogListState.ARCHIVED)
                 {
-                    return archiveOffset == null
+                    DialogPage page = archiveOffset == null
                             ? telegram.getDialogsInFolder(1,
                                     MemoryBudget.dialogPageSize())
                             : telegram.getDialogsAfter(1, archiveOffset,
                                     MemoryBudget.dialogPageSize());
+                    indexDialogPage(page);
+                    return page;
                 }
-                return scanCustomFolder(filter, main, archived, first);
+                if (indexPage)
+                {
+                    FolderLoadResult page = new FolderLoadResult();
+                    page.indexPage = true;
+                    page.generation = generation;
+                    page.mainExhausted = true;
+                    page.archiveExhausted = true;
+                    page.snapshot = dialogIndex.queryAfter(cacheAccountId(),
+                            Dc.isTest(), filter,
+                            (int) (System.currentTimeMillis() / 1000L),
+                            indexOffset);
+                    return page;
+                }
+                return scanCustomFolder(filter, main, archived, first,
+                        generation, generationEpoch, state.indexFailed);
             }
         }, new Worker.Callback()
         {
@@ -3883,21 +4714,85 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 else
                 {
                     FolderLoadResult page = (FolderLoadResult) result;
-                    int fresh = countNew(state.dialogs, page.dialogs);
-                    Dialog[] merged = mergeFolderDialogs(state.dialogs,
-                            page.dialogs, state.filter);
-                    state.total += fresh;
-                    retainFolderTail(state, merged);
+                    state.indexGeneration = page.generation;
+                    state.indexGenerationEpoch = page.generationEpoch;
+                    state.indexFailed |= page.indexFailed;
+                    if (page.snapshot != null)
+                    {
+                        if (page.indexPage)
+                        {
+                            Dialog[] merged = mergeFolderDialogs(state.dialogs,
+                                    page.snapshot.dialogs, state.filter);
+                            retainFolderTail(state, merged);
+                        }
+                        else
+                        {
+                            state.dialogs = page.snapshot.dialogs;
+                            state.above = 0;
+                        }
+                        state.total = page.snapshot.total;
+                        state.totalKnown = page.snapshot.exact;
+                        state.cached = page.snapshot.partial;
+                    }
+                    else
+                    {
+                        int fresh = countNew(state.dialogs, page.dialogs);
+                        Dialog[] merged = mergeFolderDialogs(state.dialogs,
+                                page.dialogs, state.filter);
+                        state.total += fresh;
+                        retainFolderTail(state, merged);
+                        state.cached = false;
+                    }
                     state.scanned += page.scanned;
                     state.explicitLoaded = true;
                     state.mainCursor.offset = page.mainOffset;
                     state.mainCursor.exhausted = page.mainExhausted;
                     state.archiveCursor.offset = page.archiveOffset;
                     state.archiveCursor.exhausted = page.archiveExhausted;
-                    state.exhausted = page.mainExhausted && page.archiveExhausted;
-                    state.totalKnown = state.exhausted;
+                    if (page.generationInvalidated)
+                    {
+                        // An update landed while this generation was being
+                        // scanned. Its generation-zero upsert would otherwise
+                        // be discarded by completeGeneration, so start a new
+                        // authoritative walk instead of ever claiming exact.
+                        state.indexGeneration = 0;
+                        state.indexGenerationEpoch = 0;
+                        state.explicitLoaded = false;
+                        state.mainCursor = new FolderScanCursor(0);
+                        state.archiveCursor = new FolderScanCursor(1);
+                        state.scanned = 0;
+                        state.totalKnown = false;
+                        state.exhausted = false;
+                    }
+                    if (state.totalKnown)
+                    {
+                        state.exhausted = state.above + state.dialogs.length
+                                >= state.total;
+                        if (page.indexPage && page.snapshot.dialogs.length == 0)
+                        {
+                            state.exhausted = true;
+                        }
+                    }
+                    else
+                    {
+                        state.exhausted = page.mainExhausted
+                                && page.archiveExhausted;
+                        if (page.snapshot == null)
+                        {
+                            state.totalKnown = state.exhausted;
+                        }
+                    }
                 }
                 showFolderDialogs(selected);
+                if (state.kind == DialogListState.CUSTOM && !state.totalKnown
+                        && !state.exhausted
+                        && navigation.current() == screen)
+                {
+                    // One bounded main/archive page per maintenance task. This
+                    // makes partial -> exact convergence visible and leaves the
+                    // foreground worker available throughout the scan.
+                    loadMoreFolderDialogs(false);
+                }
                 if (manual && state.exhausted && state.dialogs.length == 0)
                 {
                     showAlert("No chats in this folder.", AlertType.INFO, screen);
@@ -3913,7 +4808,13 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 }
                 state.loading = false;
                 screen.setStatus(connectionLabel, updateLabel);
-                showAlertThen("Could not load folder", error, screen);
+                if (state.cached)
+                {
+                    screen.setStatus("cached/partial, offline", updateLabel);
+                    Diag.warn("cached folder recovery failed: "
+                            + shortMessage(error));
+                }
+                else { showAlertThen("Could not load folder", error, screen); }
             }
         });
         if (!submitted)
@@ -3929,25 +4830,54 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     }
 
     private FolderLoadResult scanCustomFolder(DialogFilterDefinition filter,
-            FolderScanCursor main, FolderScanCursor archived, boolean first)
+            FolderScanCursor main, FolderScanCursor archived, boolean first,
+            int generation, int generationEpoch, boolean indexFailed)
             throws Exception
     {
         FolderLoadResult out = new FolderLoadResult();
+        out.generation = generation;
+        out.generationEpoch = generationEpoch;
+        out.indexFailed = indexFailed;
         Dialog[] found = new Dialog[0];
         int now = (int) (System.currentTimeMillis() / 1000L);
+        long accountId = cacheAccountId();
+        if (!out.indexFailed && accountId != 0 && out.generation == 0)
+        {
+            try
+            {
+                out.generationEpoch = dialogIndexDirtyEpoch;
+                out.generation = dialogIndex.beginGeneration(accountId,
+                        Dc.isTest());
+            }
+            catch (Throwable indexError)
+            {
+                out.indexFailed = true;
+                Diag.warn("dialog index generation failed: "
+                        + shortMessage(indexError));
+            }
+        }
         if (first)
         {
             Peer[] explicit = unionPeers(filter.pinnedPeers, filter.includePeers);
             if (explicit.length > 0)
             {
                 Dialog[] rows = telegram.getPeerDialogs(explicit).dialogs;
+                if (!out.indexFailed)
+                {
+                    try
+                    {
+                        dialogIndex.upsertPage(accountId, Dc.isTest(), rows,
+                                out.generation);
+                    }
+                    catch (Throwable indexError) { out.indexFailed = true; }
+                }
                 found = matching(rows, filter, now, found);
             }
         }
         int target = Math.max(1, MemoryBudget.dialogPageSize());
         int rounds = 0;
         while (found.length < target && !(main.exhausted && archived.exhausted)
-                && rounds++ < 64)
+                && rounds++ < 1)
         {
             if (!main.exhausted)
             {
@@ -3955,6 +4885,15 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                         ? telegram.getDialogsInFolder(0, target)
                         : telegram.getDialogsAfter(0, main.offset, target);
                 out.scanned += page.size();
+                if (!out.indexFailed)
+                {
+                    try
+                    {
+                        dialogIndex.upsertPage(accountId, Dc.isTest(),
+                                page.dialogs, out.generation);
+                    }
+                    catch (Throwable indexError) { out.indexFailed = true; }
+                }
                 found = matching(page.dialogs, filter, now, found);
                 Dialog next = lastUnpinned(page.dialogs);
                 main.exhausted = page.complete || page.size() == 0
@@ -3967,6 +4906,15 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                         ? telegram.getDialogsInFolder(1, target)
                         : telegram.getDialogsAfter(1, archived.offset, target);
                 out.scanned += page.size();
+                if (!out.indexFailed)
+                {
+                    try
+                    {
+                        dialogIndex.upsertPage(accountId, Dc.isTest(),
+                                page.dialogs, out.generation);
+                    }
+                    catch (Throwable indexError) { out.indexFailed = true; }
+                }
                 found = matching(page.dialogs, filter, now, found);
                 Dialog next = lastUnpinned(page.dialogs);
                 archived.exhausted = page.complete || page.size() == 0
@@ -3979,6 +4927,38 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         out.archiveOffset = archived.offset;
         out.mainExhausted = main.exhausted;
         out.archiveExhausted = archived.exhausted;
+        if (!out.indexFailed)
+        {
+            try
+            {
+                boolean stable = dialogIndexDirtyEpoch
+                        == out.generationEpoch;
+                if (main.exhausted && archived.exhausted && stable)
+                {
+                    dialogIndex.completeGeneration(accountId, Dc.isTest(),
+                            out.generation);
+                    // Cover the small interval between the pre-commit epoch
+                    // check and the RMS write. A concurrent update must turn
+                    // the just-committed snapshot back into partial state.
+                    stable = dialogIndexDirtyEpoch == out.generationEpoch;
+                    if (stable) { dialogIndexDirtyPending = false; }
+                    else { dialogIndex.markDirty(accountId, Dc.isTest()); }
+                }
+                if (!stable)
+                {
+                    out.generationInvalidated = true;
+                    dialogIndex.markDirty(accountId, Dc.isTest());
+                }
+                out.snapshot = dialogIndex.query(accountId, Dc.isTest(), filter,
+                        now);
+            }
+            catch (Throwable indexError)
+            {
+                out.indexFailed = true;
+                Diag.warn("dialog index recovery failed: "
+                        + shortMessage(indexError));
+            }
+        }
         return out;
     }
 
@@ -4155,9 +5135,12 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 ? folderDialogState : null;
         final boolean custom = state != null
                 && state.kind == DialogListState.CUSTOM;
-        if (custom && (state.filter == null || !state.filter.editable())) { return; }
+        if (custom && folderReadOnly(state)) { return; }
         final DialogFilterDefinition changed = custom ? state.filter.copy() : null;
         if (changed != null) { changed.setPinned(selected.peer, pinned); }
+        final DialogFilterDefinition[] cachedRows = custom
+                ? upsertFolder(folderRows, changed) : null;
+        final long cacheOwner = custom ? cacheAccountId() : 0;
         final Displayable returnTo = navigation.current();
         final AsyncScope.Token asked = scope.capture();
         boolean submitted = worker.submit(new Worker.Task()
@@ -4166,7 +5149,11 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                     : "messages.toggleDialogPin"; }
             public Object run() throws Exception
             {
-                if (custom) { telegram.updateDialogFilter(changed); }
+                if (custom)
+                {
+                    telegram.updateDialogFilter(changed);
+                    cacheFolderRows(cacheOwner, cachedRows);
+                }
                 else { telegram.toggleDialogPin(selected.peer, pinned); }
                 return null;
             }
@@ -4178,6 +5165,8 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 selected.pinned = pinned;
                 if (custom && folderDialogState == state)
                 {
+                    folderRows = cachedRows;
+                    folderDefinitions = definitionsForFolderRows(cachedRows);
                     state.filter = changed;
                     state.dialogs = mergeFolderDialogs(new Dialog[0],
                             state.dialogs, changed);
@@ -4284,6 +5273,11 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             showAlert("This system folder cannot be edited.", AlertType.INFO,
                     foldersList);
         }
+        else if (foldersCachedReadOnly)
+        {
+            showAlert("Cached folders are read-only until Telegram is reachable.",
+                    AlertType.INFO, foldersList);
+        }
         else if (!selected.editable())
         {
             showAlert("Shared folders are read-only.", AlertType.INFO,
@@ -4380,6 +5374,9 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             return;
         }
         final DialogFilterDefinition saved = editingFolder.copy();
+        final DialogFilterDefinition[] cachedRows = upsertFolder(folderRows,
+                saved);
+        final long cacheOwner = cacheAccountId();
         final AsyncScope.Token asked = scope.capture();
         boolean submitted = worker.submit(new Worker.Task()
         {
@@ -4387,6 +5384,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             public Object run() throws Exception
             {
                 telegram.updateDialogFilter(saved);
+                cacheFolderRows(cacheOwner, cachedRows);
                 return null;
             }
         }, new Worker.Callback()
@@ -4429,6 +5427,79 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         return count;
     }
 
+    private static DialogFilterDefinition[] upsertFolder(
+            DialogFilterDefinition[] rows, DialogFilterDefinition value)
+    {
+        int found = -1;
+        for (int i = 0; rows != null && i < rows.length; i++)
+        {
+            if (rows[i] != null && rows[i].id == value.id) { found = i; break; }
+        }
+        int old = rows == null ? 0 : rows.length;
+        DialogFilterDefinition[] out = new DialogFilterDefinition[
+                old + (found < 0 ? 1 : 0)];
+        if (old > 0) { System.arraycopy(rows, 0, out, 0, old); }
+        out[found < 0 ? old : found] = value.copy();
+        return out;
+    }
+
+    private static DialogFilterDefinition[] removeFolder(
+            DialogFilterDefinition[] rows, int id)
+    {
+        int count = 0;
+        for (int i = 0; rows != null && i < rows.length; i++)
+        {
+            if (rows[i] != null && rows[i].id != id) { count++; }
+        }
+        DialogFilterDefinition[] out = new DialogFilterDefinition[count];
+        int at = 0;
+        for (int i = 0; rows != null && i < rows.length; i++)
+        {
+            if (rows[i] != null && rows[i].id != id)
+            {
+                out[at++] = rows[i].copy();
+            }
+        }
+        return out;
+    }
+
+    /** Runs on a worker after Telegram accepted a folder mutation. */
+    private void cacheFolderRows(long accountId,
+            DialogFilterDefinition[] rows)
+    {
+        if (accountId == 0 || dialogIndex == null) { return; }
+        DialogFilterDefinition[] definitions = definitionsForFolderRows(rows);
+        try
+        {
+            dialogIndex.saveFilters(accountId, Dc.isTest(), definitions);
+        }
+        catch (Throwable cacheError)
+        {
+            // Telegram already committed the mutation. RMS remains an
+            // optional offline accelerator and must not turn that success into
+            // a failed UI action.
+            Diag.warn("dialog filter cache update failed: "
+                    + shortMessage(cacheError));
+        }
+    }
+
+    private static DialogFilterDefinition[] definitionsForFolderRows(
+            DialogFilterDefinition[] rows)
+    {
+        DialogFilterDefinition all = new DialogFilterDefinition();
+        all.kind = DialogFilterDefinition.DEFAULT;
+        all.id = 0;
+        all.title = "All chats";
+        DialogFilterDefinition[] definitions = new DialogFilterDefinition[
+                (rows == null ? 0 : rows.length) + 1];
+        definitions[0] = all;
+        for (int i = 0; rows != null && i < rows.length; i++)
+        {
+            definitions[i + 1] = rows[i].copy();
+        }
+        return definitions;
+    }
+
     private void showFolderPeerList(int mode)
     {
         readFolderEditor();
@@ -4458,6 +5529,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
 
     private void showFolderPeerSearch(int mode)
     {
+        communityInvitePick = false;
         showSearchBox(false);
         folderPeerPickMode = mode;
         searchBox.setTitle(mode == 1 ? "Add included chat" : "Add excluded chat");
@@ -4497,7 +5569,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     private void moveSelectedFolder(final int delta)
     {
         DialogFilterDefinition selected = selectedFolder();
-        if (selected == null || !selected.editable())
+        if (foldersCachedReadOnly || selected == null || !selected.editable())
         {
             showAlert("Only personal folders can be reordered.", AlertType.INFO,
                     foldersList);
@@ -4516,6 +5588,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         order[0] = 0;
         for (int i = 0; i < reordered.length; i++) { order[i + 1] = reordered[i].id; }
         final List returnTo = foldersList;
+        final long cacheOwner = cacheAccountId();
         final AsyncScope.Token asked = scope.capture();
         boolean submitted = worker.submit(new Worker.Task()
         {
@@ -4523,6 +5596,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             public Object run() throws Exception
             {
                 telegram.updateDialogFiltersOrder(order);
+                cacheFolderRows(cacheOwner, reordered);
                 return null;
             }
         }, new Worker.Callback()
@@ -4531,6 +5605,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             {
                 if (!asked.sameSession()) { dropStale("reorder folders"); return; }
                 folderRows = reordered;
+                folderDefinitions = definitionsForFolderRows(reordered);
                 List fresh = buildFoldersList();
                 foldersList = fresh;
                 replaceScreen(fresh);
@@ -4551,7 +5626,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     private void confirmDeleteSelectedFolder()
     {
         DialogFilterDefinition selected = selectedFolder();
-        if (selected == null || !selected.editable())
+        if (foldersCachedReadOnly || selected == null || !selected.editable())
         {
             showAlert("Only personal folders can be deleted.", AlertType.INFO,
                     foldersList);
@@ -4572,6 +5647,9 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     {
         final DialogFilterDefinition doomed = pendingDeleteFolder;
         if (doomed == null) { return; }
+        final DialogFilterDefinition[] cachedRows = removeFolder(folderRows,
+                doomed.id);
+        final long cacheOwner = cacheAccountId();
         final AsyncScope.Token asked = scope.capture();
         boolean submitted = worker.submit(new Worker.Task()
         {
@@ -4579,6 +5657,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             public Object run() throws Exception
             {
                 telegram.deleteDialogFilter(doomed.id);
+                cacheFolderRows(cacheOwner, cachedRows);
                 return null;
             }
         }, new Worker.Callback()
@@ -4814,10 +5893,12 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             {
                 // A null offset is the top of the list, which is where the
                 // first run ever dropped came from.
-                return from == null
+                DialogPage page = from == null
                         ? telegram.getDialogs(MemoryBudget.dialogPageSize())
                         : telegram.getDialogsAfter(from,
                                 MemoryBudget.dialogPageSize());
+                indexDialogPage(page);
+                return page;
             }
         }, new Worker.Callback()
         {
@@ -4923,8 +6004,10 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             public String name() { return "messages.getDialogs/more"; }
             public Object run() throws Exception
             {
-                return telegram.getDialogsAfter(pageOffset,
+                DialogPage page = telegram.getDialogsAfter(pageOffset,
                         MemoryBudget.dialogPageSize());
+                indexDialogPage(page);
+                return page;
             }
         }, new Worker.Callback()
         {
@@ -5013,6 +6096,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             resetTopicWindow();
             topics = new ForumTopic[0];
             topicTotal = 0;
+            currentForumInfo = null;
             topicScreen = createTopicListScreen(peer);
             telegram.setActivePeer(peer);
             pushScreen(topicScreen);
@@ -5053,11 +6137,191 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         return screen;
     }
 
+    private void updateTopicCommands()
+    {
+        if (topicScreen == null) { return; }
+        topicScreen.removeCommand(cmdNewTopic);
+        topicScreen.removeCommand(cmdTopicActions);
+        if (currentForumInfo != null
+                && currentForumInfo.capabilities.canCreateTopics)
+        {
+            topicScreen.addCommand(cmdNewTopic);
+        }
+        if (currentForumInfo != null
+                && currentForumInfo.capabilities.canManageTopics
+                && topicScreen.selectedTopic() != null)
+        {
+            topicScreen.addCommand(cmdTopicActions);
+        }
+    }
+
     private void openSelectedTopic()
     {
         ForumTopic topic = topicScreen == null
                 ? null : topicScreen.selectedTopic();
         if (topic != null) { openTopic(topic); }
+    }
+
+    private void showTopicActions()
+    {
+        if (topicScreen == null || currentForumInfo == null
+                || !currentForumInfo.capabilities.canManageTopics) { return; }
+        actionTopic = topicScreen.selectedTopic();
+        if (actionTopic == null) { return; }
+        int[] actions = new int[6];
+        int count = 0;
+        topicActionList = new List(actionTopic.title, List.IMPLICIT);
+        topicActionList.append("Rename", null);
+        actions[count++] = TOPIC_RENAME;
+        if (actionTopic.id == ForumTopic.GENERAL_ID)
+        {
+            topicActionList.append(actionTopic.hidden ? "Unhide General"
+                    : "Hide General", null);
+            actions[count++] = actionTopic.hidden ? TOPIC_UNHIDE : TOPIC_HIDE;
+        }
+        else
+        {
+            topicActionList.append(actionTopic.closed ? "Reopen" : "Close", null);
+            actions[count++] = actionTopic.closed ? TOPIC_REOPEN : TOPIC_CLOSE;
+        }
+        topicActionList.append(actionTopic.pinned ? "Unpin" : "Pin", null);
+        actions[count++] = actionTopic.pinned ? TOPIC_UNPIN : TOPIC_PIN;
+        if (actionTopic.id != ForumTopic.GENERAL_ID)
+        {
+            topicActionList.append("Delete topic history", null);
+            actions[count++] = TOPIC_DELETE;
+        }
+        topicActionKinds = new int[count];
+        System.arraycopy(actions, 0, topicActionKinds, 0, count);
+        topicActionList.addCommand(cmdSelectTopicAction);
+        topicActionList.setSelectCommand(cmdSelectTopicAction);
+        topicActionList.addCommand(cmdBack);
+        topicActionList.setCommandListener(this);
+        pushScreen(topicActionList);
+    }
+
+    private void selectTopicAction()
+    {
+        if (topicActionList == null || actionTopic == null) { return; }
+        int at = topicActionList.getSelectedIndex();
+        if (at < 0 || at >= topicActionKinds.length) { return; }
+        int action = topicActionKinds[at];
+        if (action == TOPIC_RENAME) { showTopicTitleEditor(actionTopic); }
+        else if (action == TOPIC_DELETE) { confirmDeleteTopic(); }
+        else { performTopicAction(action); }
+    }
+
+    private void showTopicTitleEditor(ForumTopic topic)
+    {
+        actionTopic = topic;
+        topicTitleBox = new TextBox(topic == null ? "New topic" : "Rename topic",
+                topic == null ? "" : topic.title, 128, TextField.ANY);
+        topicTitleBox.addCommand(cmdSaveTopic);
+        topicTitleBox.addCommand(cmdBack);
+        topicTitleBox.setCommandListener(this);
+        pushScreen(topicTitleBox);
+    }
+
+    private void saveTopicTitle()
+    {
+        String title = topicTitleBox == null ? "" : topicTitleBox.getString().trim();
+        if (title.length() == 0)
+        {
+            showAlert("Topic title is required.", AlertType.WARNING,
+                    topicTitleBox);
+            return;
+        }
+        performTopicAction(actionTopic == null ? 0 : TOPIC_RENAME);
+    }
+
+    private void confirmDeleteTopic()
+    {
+        if (actionTopic == null || actionTopic.id == ForumTopic.GENERAL_ID) { return; }
+        deleteTopicConfirm = new Form("Delete topic history");
+        deleteTopicConfirm.append("Permanently delete \"" + actionTopic.title
+                + "\" and all messages in it? This cannot be undone.");
+        deleteTopicConfirm.addCommand(cmdConfirmDeleteTopic);
+        deleteTopicConfirm.addCommand(cmdBack);
+        deleteTopicConfirm.setCommandListener(this);
+        pushScreen(deleteTopicConfirm);
+    }
+
+    /** action zero creates a new topic; every other value edits actionTopic. */
+    private void performTopicAction(final int action)
+    {
+        final TopicListScreen screen = topicScreen;
+        if (screen == null) { return; }
+        final Peer forum = screen.peer();
+        final ForumTopic topic = actionTopic;
+        final String title = topicTitleBox == null ? ""
+                : topicTitleBox.getString().trim();
+        if (action != 0 && topic == null) { return; }
+        final AsyncScope.Token asked = scope.capture();
+        showBusy("Topic", action == TOPIC_DELETE
+                ? "Deleting topic history..." : "Updating topic...");
+        boolean submitted = worker.submit(new Worker.Task()
+        {
+            public String name() { return "messages.forumTopicAdmin"; }
+            public Object run() throws Exception
+            {
+                switch (action)
+                {
+                    case 0: telegram.createForumTopic(forum, title); break;
+                    case TOPIC_RENAME:
+                        telegram.renameForumTopic(forum, topic.id, title); break;
+                    case TOPIC_CLOSE:
+                        telegram.setForumTopicClosed(forum, topic.id, true); break;
+                    case TOPIC_REOPEN:
+                        telegram.setForumTopicClosed(forum, topic.id, false); break;
+                    case TOPIC_PIN:
+                        telegram.setForumTopicPinned(forum, topic.id, true); break;
+                    case TOPIC_UNPIN:
+                        telegram.setForumTopicPinned(forum, topic.id, false); break;
+                    case TOPIC_HIDE:
+                        telegram.setGeneralTopicHidden(forum, true); break;
+                    case TOPIC_UNHIDE:
+                        telegram.setGeneralTopicHidden(forum, false); break;
+                    case TOPIC_DELETE:
+                        telegram.deleteForumTopic(forum, topic.id); break;
+                    default: throw new IllegalArgumentException("topic action");
+                }
+                return null;
+            }
+        }, new Worker.Callback()
+        {
+            public void onSuccess(Object ignored)
+            {
+                if (!asked.sameSession() || topicScreen != screen)
+                {
+                    dropStale("forum topic action"); return;
+                }
+                while (!navigation.isRoot() && navigation.current() != screen)
+                {
+                    navigation.pop();
+                }
+                restoreScreen(screen);
+                actionTopic = null;
+                topicActionList = null;
+                topicTitleBox = null;
+                deleteTopicConfirm = null;
+                loadTopics(forum);
+            }
+            public void onFailure(Throwable error)
+            {
+                if (!asked.sameSession()) { dropStale("forum topic action"); return; }
+                Displayable back = action == TOPIC_DELETE
+                        ? (Displayable) deleteTopicConfirm
+                        : topicTitleBox != null ? (Displayable) topicTitleBox
+                        : (Displayable) topicActionList;
+                showAlertThen("Could not update topic", error, back);
+            }
+        });
+        if (!submitted)
+        {
+            showRefused("Topic not updated", "Try again in a moment.",
+                    topicTitleBox != null ? (Displayable) topicTitleBox
+                            : (Displayable) topicActionList);
+        }
     }
 
     /** Open one topic's transcript; the same shape as a flat chat open. */
@@ -5121,6 +6385,8 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     {
         final TopicListScreen screen = topicScreen;
         if (screen == null || topicPageInFlight) { return; }
+        final int selectedBeforeReload = screen.selectedTopic() == null ? 0
+                : screen.selectedTopic().id;
         topicPageInFlight = true;
         screen.setStatus("loading topics...", updateLabel);
         final AsyncScope.Token asked = scope.capture();
@@ -5130,8 +6396,11 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             public Object run() throws Exception
             {
                 MemoryPressure.reserve(MemoryBudget.inflateOutputBytes() / 4);
-                return telegram.getForumTopics(peer, null,
+                ForumLoadResult loaded = new ForumLoadResult();
+                loaded.info = telegram.getChatInfo(peer);
+                loaded.page = telegram.getForumTopics(peer, null,
                         MemoryBudget.topicPageSize());
+                return loaded;
             }
         }, new Worker.Callback()
         {
@@ -5148,11 +6417,15 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                     dropStale("messages.getForumTopics");
                     return;
                 }
-                ForumTopicPage page = (ForumTopicPage) result;
+                ForumLoadResult loaded = (ForumLoadResult) result;
+                currentForumInfo = loaded.info;
+                ForumTopicPage page = loaded.page;
                 topics = page.topics;
                 topicTotal = page.total;
                 topicsExhausted = topics.length >= topicTotal;
-                showTopicList(0);
+                showTopicList(hasTopic(selectedBeforeReload)
+                        ? selectedBeforeReload : 0);
+                updateTopicCommands();
             }
 
             public void onFailure(Throwable error)
@@ -5193,6 +6466,16 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             initialRefreshRetry.schedule(400L);
             screen.setStatus("waiting for topics...", updateLabel);
         }
+    }
+
+    private boolean hasTopic(int topicId)
+    {
+        if (topicId <= 0) { return false; }
+        for (int i = 0; i < topics.length; i++)
+        {
+            if (topics[i] != null && topics[i].id == topicId) { return true; }
+        }
+        return false;
     }
 
     /** Reset to the top and fetch page one again. */
@@ -5672,6 +6955,10 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         screen.addCommand(cmdForward);
         screen.addCommand(cmdDeleteMessage);
         screen.addCommand(cmdProfile);
+        if (peer.kind == Peer.CHAT || peer.kind == Peer.CHANNEL)
+        {
+            screen.addCommand(cmdChatInfo);
+        }
         screen.addCommand(cmdOlder);
         screen.addCommand(cmdJumpLatest);
         screen.addCommand(cmdFirstUnread);
@@ -6731,7 +8018,10 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             }
         }
 
-        boolean refresh = batch.fullRefresh || batch.dialogListsChanged;
+        boolean refresh = batch.fullRefresh
+                || (batch.dialogListsChanged
+                        && (batch.dialogPeers == null
+                                || batch.dialogPeers.length == 0));
         boolean following = chatScreen != null
                 && display.getCurrent() == chatScreen && chatScreen.isAtEnd();
         int incomingForOpen = 0;
@@ -6766,23 +8056,67 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             // therefore an ordinary miss, not a reason to snapshot-refresh.
             applyPollUpdate(batch.polls[i]);
         }
+        boolean folderReconciled = reconcileDialogIndex(batch);
 
         if (dialogList != null && display.getCurrent() == dialogList)
         {
             showDialogList(selectedPeer);
         }
+        if (dialogIndexDirtyPending)
+        {
+            if (folderDialogScreen == null
+                    || display.getCurrent() != folderDialogScreen
+                    || folderDialogState == null
+                    || folderDialogState.kind != DialogListState.CUSTOM)
+            {
+                flushDialogIndexDirty();
+            }
+        }
         if (batch.dialogListsChanged && folderDialogScreen != null
                 && display.getCurrent() == folderDialogScreen)
         {
-            reloadFolderDialogs();
+            if (batch.dialogPeers == null || batch.dialogPeers.length == 0
+                    || !folderReconciled)
+            {
+                reloadFolderDialogs();
+            }
         }
         if (batch.folderDefinitionsChanged)
         {
             loadFolders(false);
         }
+        if (batch.chatInfoChanged && chatInfoScreen != null
+                && display.getCurrent() == chatInfoScreen
+                && containsPeer(batch.chatPeers, communityPeer))
+        {
+            showChatInfo(communityPeer, true);
+        }
+        if (batch.participantsChanged && participantScreen != null
+                && display.getCurrent() == participantScreen
+                && containsPeer(batch.participantPeers, communityPeer))
+        {
+            loadParticipants(true, false);
+        }
+        if (batch.inviteLinksChanged && exportedInviteList != null
+                && display.getCurrent() == exportedInviteList
+                && containsPeer(batch.invitePeers, communityPeer))
+        {
+            loadInviteLinks(true, false);
+        }
+        if (batch.joinRequestsChanged && joinRequestList != null
+                && display.getCurrent() == joinRequestList
+                && containsPeer(batch.invitePeers, communityPeer))
+        {
+            loadJoinRequests(true, false);
+        }
         if (topicScreen != null && display.getCurrent() == topicScreen)
         {
             showTopicList(selectedTopicId());
+            if (batch.forumTopicsChanged
+                    && containsPeer(batch.topicPeers, topicScreen.peer()))
+            {
+                loadTopics(topicScreen.peer());
+            }
         }
         if (chatScreen != null && display.getCurrent() == chatScreen)
         {
@@ -6800,6 +8134,16 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             cacheHistory(openPeer, openThreadId(), openHistory);
         }
         if (refresh) { scheduleSnapshotRefresh(); }
+    }
+
+    private static boolean containsPeer(Peer[] values, Peer wanted)
+    {
+        if (values == null || wanted == null) { return false; }
+        for (int i = 0; i < values.length; i++)
+        {
+            if (samePeer(values[i], wanted)) { return true; }
+        }
+        return false;
     }
 
     /**
@@ -7356,6 +8700,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 // under whoever was reading it.
                 snapshot.dialogs = telegram.getDialogs(
                         MemoryBudget.dialogPageSize());
+                indexDialogPage(snapshot.dialogs);
                 if (target != null)
                 {
                     snapshot.history = telegram.getHistory(target,
@@ -8054,6 +9399,1543 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         localReads.cleared(openPeer, openThreadId(), maxId);
         showAlert("All loaded messages are marked as read.",
                 AlertType.INFO, chatScreen);
+    }
+
+    // ------------------------------------------------ community management
+
+    private Peer communityPeerFor(Displayable source)
+    {
+        Peer peer = null;
+        if (source == dialogList || source == folderDialogScreen)
+        {
+            peer = ((DialogListScreen) source).selectedPeer();
+        }
+        else if (source == searchResults) { peer = selectedSearchPeer(); }
+        else if (source instanceof ChatScreen) { peer = ((ChatScreen) source).peer(); }
+        else if (source == chatInfoScreen) { peer = communityPeer; }
+        else if (source == invitePreviewScreen && invitePreview != null)
+        {
+            peer = invitePreview.peer;
+        }
+        return peer != null && (peer.kind == Peer.CHAT
+                || peer.kind == Peer.CHANNEL) ? peer : null;
+    }
+
+    private void showChatInfo(final Peer target, final boolean refresh)
+    {
+        if (target == null || (target.kind != Peer.CHAT
+                && target.kind != Peer.CHANNEL))
+        {
+            showAlert("Select a group or channel first.", AlertType.INFO,
+                    navigation.current());
+            return;
+        }
+        showBusy("Chat info", "Loading community information...");
+        final AsyncScope.Token asked = scope.capture();
+        boolean submitted = worker.submit(new Worker.Task()
+        {
+            public String name() { return "messages.getFullChat"; }
+            public Object run() throws Exception
+            {
+                return telegram.getChatInfo(target);
+            }
+        }, new Worker.Callback()
+        {
+            public void onSuccess(Object result)
+            {
+                if (!asked.sameSession())
+                {
+                    dropStale("messages.getFullChat");
+                    return;
+                }
+                currentChatInfo = (ChatInfo) result;
+                communityPeer = currentChatInfo.peer;
+                rebuildChatInfoScreen();
+                if (refresh && navigation.current() == chatInfoScreen)
+                {
+                    restoreScreen(chatInfoScreen);
+                }
+                else { pushScreen(chatInfoScreen); }
+            }
+
+            public void onFailure(Throwable error)
+            {
+                if (!asked.sameSession())
+                {
+                    dropStale("messages.getFullChat");
+                    return;
+                }
+                showAlertThen("Could not load chat info", error,
+                        navigation.current());
+            }
+        });
+        if (!submitted)
+        {
+            showRefused("Chat info not loaded",
+                    "Try Chat info again in a moment.");
+        }
+    }
+
+    private void rebuildChatInfoScreen()
+    {
+        if (chatInfoScreen == null)
+        {
+            chatInfoScreen = new Form("Chat info");
+            chatInfoScreen.setCommandListener(this);
+        }
+        else
+        {
+            chatInfoScreen.deleteAll();
+            chatInfoScreen.removeCommand(cmdMembers);
+            chatInfoScreen.removeCommand(cmdRemoved);
+            chatInfoScreen.removeCommand(cmdInviteUser);
+            chatInfoScreen.removeCommand(cmdJoinChat);
+            chatInfoScreen.removeCommand(cmdLeaveChat);
+            chatInfoScreen.removeCommand(cmdDefaultPermissions);
+            chatInfoScreen.removeCommand(cmdInviteLinks);
+            chatInfoScreen.removeCommand(cmdJoinRequests);
+            chatInfoScreen.removeCommand(cmdRefresh);
+            chatInfoScreen.removeCommand(cmdBack);
+        }
+        ChatInfo info = currentChatInfo;
+        Peer peer = info == null ? null : info.peer;
+        chatInfoScreen.setTitle(peer == null || peer.title.length() == 0
+                ? "Chat info" : peer.title);
+        if (info == null) { return; }
+        chatInfoScreen.append("Type: " + info.typeLabel() + "\n");
+        chatInfoScreen.append("Role: " + info.roleLabel() + "\n");
+        if (peer != null && peer.username != null && peer.username.length() > 0)
+        {
+            chatInfoScreen.append("@" + peer.username + "\n");
+        }
+        chatInfoScreen.append("About: " + (info.about.length() == 0
+                ? "(empty)" : info.about) + "\n");
+        appendCount(chatInfoScreen, "Members", info.participantsCount);
+        appendCount(chatInfoScreen, "Administrators", info.adminsCount);
+        appendCount(chatInfoScreen, "Removed", info.removedCount);
+        appendCount(chatInfoScreen, "Restricted", info.bannedCount);
+        appendCount(chatInfoScreen, "Online", info.onlineCount);
+        appendCount(chatInfoScreen, "Pending requests", info.pendingJoinRequests);
+        if (info.capabilities.canViewParticipants)
+        {
+            chatInfoScreen.addCommand(cmdMembers);
+        }
+        if (info.capabilities.canUnban)
+        {
+            chatInfoScreen.addCommand(cmdRemoved);
+        }
+        if (info.capabilities.canInvite)
+        {
+            chatInfoScreen.addCommand(cmdInviteUser);
+        }
+        if (info.capabilities.canEditDefaultPermissions
+                && info.type != ChatInfo.BROADCAST)
+        {
+            chatInfoScreen.addCommand(cmdDefaultPermissions);
+        }
+        if (info.capabilities.canManageInviteLinks)
+        {
+            chatInfoScreen.addCommand(cmdInviteLinks);
+        }
+        if (info.capabilities.canManageJoinRequests)
+        {
+            chatInfoScreen.addCommand(cmdJoinRequests);
+        }
+        if (info.capabilities.canJoin) { chatInfoScreen.addCommand(cmdJoinChat); }
+        if (info.capabilities.canLeave) { chatInfoScreen.addCommand(cmdLeaveChat); }
+        chatInfoScreen.addCommand(cmdRefresh);
+        chatInfoScreen.addCommand(cmdBack);
+    }
+
+    private static void appendCount(Form form, String label, int value)
+    {
+        if (value >= 0) { form.append(label + ": " + value + "\n"); }
+    }
+
+    private void showParticipants(int filter)
+    {
+        if (currentChatInfo == null || communityPeer == null) { return; }
+        if (filter == ChatParticipantPage.REMOVED
+                && !currentChatInfo.capabilities.canUnban) { return; }
+        participantFilter = filter;
+        participantRows = new ChatParticipant[0];
+        participantWindowStart = 0;
+        participantTotal = filter == ChatParticipantPage.REMOVED
+                ? Math.max(0, currentChatInfo.removedCount)
+                : Math.max(0, currentChatInfo.participantsCount);
+        participantsExhausted = false;
+        participantPageInFlight = false;
+        participantScreen = new ParticipantListScreen(currentTheme(), communityPeer);
+        participantScreen.setTitle(filter == ChatParticipantPage.REMOVED
+                ? "Removed" : "Members");
+        participantScreen.setEmptyText(filter == ChatParticipantPage.REMOVED
+                ? "(no removed users)" : "(no members available)");
+        participantScreen.setStatus(connectionLabel);
+        participantScreen.addCommand(cmdParticipantActions);
+        participantScreen.addCommand(cmdMoreParticipants);
+        participantScreen.addCommand(cmdRefresh);
+        participantScreen.addCommand(cmdBack);
+        participantScreen.setCommandListener(this);
+        participantScreen.setActivationListener(
+                new ParticipantListScreen.ActivationListener()
+        {
+            public void onParticipantActivated(ChatParticipant participant)
+            {
+                showParticipantActions(participant);
+            }
+        });
+        participantScreen.setViewportListener(
+                new ParticipantListScreen.ViewportListener()
+        {
+            public void onParticipantViewportChanged()
+            {
+                maybeLoadParticipants();
+            }
+        });
+        pushScreen(participantScreen);
+        loadParticipants(true, true);
+    }
+
+    private void maybeLoadParticipants()
+    {
+        if (participantScreen == null || participantPageInFlight
+                || participantsExhausted || communityPeer == null
+                || communityPeer.kind != Peer.CHANNEL) { return; }
+        int margin = MemoryBudget.participantPrefetchMargin();
+        if (participantScreen.lastVisibleIndex()
+                >= participantRows.length - margin - 1)
+        {
+            loadParticipants(false, false);
+        }
+    }
+
+    private void loadParticipants(final boolean reset, final boolean manual)
+    {
+        if (communityPeer == null || participantPageInFlight) { return; }
+        if (!reset && participantsExhausted)
+        {
+            if (manual)
+            {
+                showAlert("No more participants.", AlertType.INFO,
+                        participantScreen);
+            }
+            return;
+        }
+        final Peer chat = communityPeer;
+        final int filter = participantFilter;
+        final int offset = reset ? 0
+                : participantWindowStart + participantRows.length;
+        final int limit = MemoryBudget.participantPageSize();
+        final AsyncScope.Token asked = scope.capture();
+        participantPageInFlight = true;
+        if (participantScreen != null) { participantScreen.setStatus("loading"); }
+        Worker pageWorker = manual ? worker : syncWorker;
+        boolean submitted = pageWorker.submit(new Worker.Task()
+        {
+            public String name() { return "channels.getParticipants"; }
+            public Object run() throws Exception
+            {
+                if (chat.kind == Peer.CHAT)
+                {
+                    if (filter == ChatParticipantPage.REMOVED)
+                    {
+                        return new ChatParticipant[0];
+                    }
+                    return telegram.getBasicParticipants(chat);
+                }
+                return telegram.getChannelParticipants(chat, filter,
+                        offset, limit);
+            }
+        }, new Worker.Callback()
+        {
+            public void onSuccess(Object result)
+            {
+                participantPageInFlight = false;
+                if (!asked.sameSession() || participantScreen == null
+                        || !samePeer(chat, communityPeer)
+                        || filter != participantFilter)
+                {
+                    dropStale("channels.getParticipants");
+                    return;
+                }
+                Peer selected = participantScreen.selectedParticipant() == null
+                        ? null : participantScreen.selectedParticipant().peer;
+                if (result instanceof ChatParticipant[])
+                {
+                    participantRows = (ChatParticipant[]) result;
+                    for (int i = 0; i < participantRows.length; i++)
+                    {
+                        ChatParticipant row = participantRows[i];
+                        if (row != null && row.role == ChatParticipant.ADMIN
+                                && (currentChatInfo == null
+                                        || !currentChatInfo.creator))
+                        {
+                            row.canEdit = false;
+                        }
+                    }
+                    participantWindowStart = 0;
+                    participantTotal = participantRows.length;
+                    participantsExhausted = true;
+                }
+                else
+                {
+                    ChatParticipantPage page = (ChatParticipantPage) result;
+                    participantTotal = page.total;
+                    participantsExhausted = page.exhausted;
+                    if (reset)
+                    {
+                        participantRows = page.participants;
+                        participantWindowStart = page.offset;
+                    }
+                    else { appendParticipantPage(page.participants); }
+                }
+                participantScreen.setStatus(connectionLabel);
+                participantScreen.setParticipants(participantRows,
+                        participantWindowStart, participantTotal, selected);
+                if (participantsExhausted)
+                {
+                    participantScreen.removeCommand(cmdMoreParticipants);
+                }
+                else { participantScreen.addCommand(cmdMoreParticipants); }
+            }
+
+            public void onFailure(Throwable error)
+            {
+                participantPageInFlight = false;
+                if (!asked.sameSession() || participantScreen == null)
+                {
+                    dropStale("channels.getParticipants");
+                    return;
+                }
+                participantScreen.setStatus("failed");
+                showAlertThen("Could not load participants", error,
+                        participantScreen);
+            }
+        });
+        if (!submitted)
+        {
+            participantPageInFlight = false;
+            if (participantScreen != null) { participantScreen.setStatus("waiting"); }
+            if (manual)
+            {
+                showRefused("Participants not loaded",
+                        "Try again in a moment.", participantScreen);
+            }
+        }
+    }
+
+    private void appendParticipantPage(ChatParticipant[] page)
+    {
+        int old = participantRows.length;
+        int extra = page == null ? 0 : page.length;
+        ChatParticipant[] merged = new ChatParticipant[old + extra];
+        System.arraycopy(participantRows, 0, merged, 0, old);
+        int count = old;
+        for (int i = 0; i < extra; i++)
+        {
+            ChatParticipant row = page[i];
+            if (row == null || containsParticipant(merged, count, row.peer))
+            {
+                continue;
+            }
+            merged[count++] = row;
+        }
+        int cap = MemoryBudget.maxParticipants();
+        int drop = Math.max(0, count - cap);
+        ChatParticipant[] kept = new ChatParticipant[count - drop];
+        System.arraycopy(merged, drop, kept, 0, kept.length);
+        participantRows = kept;
+        participantWindowStart += drop;
+    }
+
+    private static boolean containsParticipant(ChatParticipant[] rows,
+                                               int count, Peer peer)
+    {
+        if (peer == null) { return false; }
+        for (int i = 0; i < count; i++)
+        {
+            Peer candidate = rows[i] == null ? null : rows[i].peer;
+            if (candidate != null && candidate.kind == peer.kind
+                    && candidate.id == peer.id) { return true; }
+        }
+        return false;
+    }
+
+    private void showParticipantActions(ChatParticipant participant)
+    {
+        if (participant == null || participant.peer == null) { return; }
+        actionParticipant = participant;
+        int[] actions = new int[8];
+        int count = 0;
+        participantActionList = new List(participant.peer.title, List.IMPLICIT);
+        participantActionList.append("Profile", null);
+        actions[count++] = 0;
+        boolean target = participant.peer.kind == Peer.USER
+                && !participant.self && participant.canEdit;
+        if (target && participant.status == ChatParticipant.ACTIVE
+                && currentChatInfo != null
+                && currentChatInfo.capabilities.canPromote)
+        {
+            if (participant.role == ChatParticipant.ADMIN)
+            {
+                participantActionList.append("Edit admin rights", null);
+                actions[count++] = COMMUNITY_EDIT_ADMIN;
+                participantActionList.append("Demote", null);
+                actions[count++] = COMMUNITY_DEMOTE;
+            }
+            else
+            {
+                participantActionList.append("Promote", null);
+                actions[count++] = COMMUNITY_PROMOTE;
+            }
+        }
+        if (target && participant.status == ChatParticipant.ACTIVE
+                && participant.role != ChatParticipant.ADMIN)
+        {
+            if (currentChatInfo.capabilities.canKick)
+            {
+                participantActionList.append("Kick", null);
+                actions[count++] = COMMUNITY_KICK;
+            }
+            if (currentChatInfo.capabilities.canBan)
+            {
+                participantActionList.append("Ban", null);
+                actions[count++] = COMMUNITY_BAN;
+            }
+        }
+        else if (target && participant.status != ChatParticipant.ACTIVE
+                && currentChatInfo.capabilities.canUnban)
+        {
+            participantActionList.append("Unban", null);
+            actions[count++] = COMMUNITY_UNBAN;
+        }
+        participantActionKinds = new int[count];
+        System.arraycopy(actions, 0, participantActionKinds, 0, count);
+        participantActionList.addCommand(cmdSelectCommunityAction);
+        participantActionList.setSelectCommand(cmdSelectCommunityAction);
+        participantActionList.addCommand(cmdBack);
+        participantActionList.setCommandListener(this);
+        pushScreen(participantActionList);
+    }
+
+    private void selectParticipantAction()
+    {
+        if (participantActionList == null || actionParticipant == null) { return; }
+        int at = participantActionList.getSelectedIndex();
+        if (at < 0 || at >= participantActionKinds.length) { return; }
+        int action = participantActionKinds[at];
+        if (action == 0)
+        {
+            showProfile(actionParticipant.peer, participantActionList);
+        }
+        else if (action == COMMUNITY_PROMOTE
+                || action == COMMUNITY_EDIT_ADMIN)
+        {
+            showAdminRights(actionParticipant);
+        }
+        else { confirmCommunityAction(action, actionParticipant.peer); }
+    }
+
+    private void showAdminRights(ChatParticipant participant)
+    {
+        if (participant == null || currentChatInfo == null
+                || !currentChatInfo.capabilities.canPromote) { return; }
+        editingAdmin = participant;
+        ChatAdminRightsDef rights = participant.role == ChatParticipant.ADMIN
+                ? participant.adminRights.copy() : new ChatAdminRightsDef();
+        adminRightsForm = new Form(participant.role == ChatParticipant.ADMIN
+                ? "Admin rights" : "Promote");
+        adminRightsChoices = new ChoiceGroup("Allow", ChoiceGroup.MULTIPLE);
+        int[] bits = new int[11];
+        int count = 0;
+        if (communityPeer.kind == Peer.CHAT)
+        {
+            adminRightsChoices.append("Administrator", null);
+            adminRightsChoices.setSelectedIndex(0, true);
+            bits[count++] = ChatAdminRightsDef.CHANGE_INFO;
+        }
+        else
+        {
+            count = appendAdminRight(bits, count, "Change info",
+                    ChatAdminRightsDef.CHANGE_INFO, rights.changeInfo);
+            if (currentChatInfo.type == ChatInfo.BROADCAST)
+            {
+                count = appendAdminRight(bits, count, "Post messages",
+                        ChatAdminRightsDef.POST_MESSAGES, rights.postMessages);
+                count = appendAdminRight(bits, count, "Edit messages",
+                        ChatAdminRightsDef.EDIT_MESSAGES, rights.editMessages);
+            }
+            count = appendAdminRight(bits, count, "Delete messages",
+                    ChatAdminRightsDef.DELETE_MESSAGES, rights.deleteMessages);
+            count = appendAdminRight(bits, count, "Ban users",
+                    ChatAdminRightsDef.BAN_USERS, rights.banUsers);
+            count = appendAdminRight(bits, count, "Invite users and links",
+                    ChatAdminRightsDef.INVITE_USERS, rights.inviteUsers);
+            count = appendAdminRight(bits, count, "Pin messages",
+                    ChatAdminRightsDef.PIN_MESSAGES, rights.pinMessages);
+            count = appendAdminRight(bits, count, "Add administrators",
+                    ChatAdminRightsDef.ADD_ADMINS, rights.addAdmins);
+            count = appendAdminRight(bits, count, "Anonymous",
+                    ChatAdminRightsDef.ANONYMOUS, rights.anonymous);
+            count = appendAdminRight(bits, count, "Manage calls",
+                    ChatAdminRightsDef.MANAGE_CALL, rights.manageCall);
+            if (currentChatInfo.type == ChatInfo.FORUM)
+            {
+                count = appendAdminRight(bits, count, "Manage topics",
+                        ChatAdminRightsDef.MANAGE_TOPICS, rights.manageTopics);
+            }
+        }
+        adminRightBits = new int[count];
+        System.arraycopy(bits, 0, adminRightBits, 0, count);
+        adminRightsForm.append(adminRightsChoices);
+        adminRightsForm.addCommand(cmdSaveAdmin);
+        adminRightsForm.addCommand(cmdBack);
+        adminRightsForm.setCommandListener(this);
+        pushScreen(adminRightsForm);
+    }
+
+    private int appendAdminRight(int[] bits, int count, String label, int bit,
+            boolean selected)
+    {
+        adminRightsChoices.append(label, null);
+        adminRightsChoices.setSelectedIndex(count, selected);
+        bits[count] = bit;
+        return count + 1;
+    }
+
+    private void saveAdminRights()
+    {
+        final ChatParticipant participant = editingAdmin;
+        if (participant == null || adminRightsChoices == null) { return; }
+        final ChatAdminRightsDef rights = participant.role == ChatParticipant.ADMIN
+                ? participant.adminRights.copy() : new ChatAdminRightsDef();
+        rights.changeInfo = false;
+        rights.postMessages = false;
+        rights.editMessages = false;
+        rights.deleteMessages = false;
+        rights.banUsers = false;
+        rights.inviteUsers = false;
+        rights.pinMessages = false;
+        rights.addAdmins = false;
+        rights.anonymous = false;
+        rights.manageCall = false;
+        rights.manageTopics = false;
+        for (int i = 0; i < adminRightBits.length; i++)
+        {
+            setAdminRight(rights, adminRightBits[i],
+                    adminRightsChoices.isSelected(i));
+        }
+        if (participant.role != ChatParticipant.ADMIN && !rights.hasCoreRights())
+        {
+            showAlert("Select at least one administrator right.",
+                    AlertType.WARNING, adminRightsForm);
+            return;
+        }
+        if (participant.role == ChatParticipant.ADMIN && rights.empty())
+        {
+            showAlert("Use Demote to remove every administrator right.",
+                    AlertType.WARNING, adminRightsForm);
+            return;
+        }
+        final Peer chat = communityPeer;
+        final AsyncScope.Token asked = scope.capture();
+        showBusy("Admin rights", "Saving rights...");
+        boolean submitted = worker.submit(new Worker.Task()
+        {
+            public String name() { return "channels.editAdmin"; }
+            public Object run() throws Exception
+            {
+                telegram.editChatAdmin(chat, participant, rights);
+                return telegram.getChatInfo(chat);
+            }
+        }, new Worker.Callback()
+        {
+            public void onSuccess(Object ignored)
+            {
+                if (!asked.sameSession()) { dropStale("channels.editAdmin"); return; }
+                editingAdmin = null;
+                currentChatInfo = (ChatInfo) ignored;
+                rebuildChatInfoScreen();
+                returnTo(participantScreen);
+                loadParticipants(true, true);
+            }
+            public void onFailure(Throwable error)
+            {
+                if (!asked.sameSession()) { dropStale("channels.editAdmin"); return; }
+                showAlertThen("Could not save admin rights", error,
+                        adminRightsForm);
+            }
+        });
+        if (!submitted)
+        {
+            showRefused("Admin rights not saved", "Try again in a moment.",
+                    adminRightsForm);
+        }
+    }
+
+    private static void setAdminRight(ChatAdminRightsDef rights, int bit,
+            boolean value)
+    {
+        if (bit == ChatAdminRightsDef.CHANGE_INFO) rights.changeInfo = value;
+        else if (bit == ChatAdminRightsDef.POST_MESSAGES) rights.postMessages = value;
+        else if (bit == ChatAdminRightsDef.EDIT_MESSAGES) rights.editMessages = value;
+        else if (bit == ChatAdminRightsDef.DELETE_MESSAGES) rights.deleteMessages = value;
+        else if (bit == ChatAdminRightsDef.BAN_USERS) rights.banUsers = value;
+        else if (bit == ChatAdminRightsDef.INVITE_USERS) rights.inviteUsers = value;
+        else if (bit == ChatAdminRightsDef.PIN_MESSAGES) rights.pinMessages = value;
+        else if (bit == ChatAdminRightsDef.ADD_ADMINS) rights.addAdmins = value;
+        else if (bit == ChatAdminRightsDef.ANONYMOUS) rights.anonymous = value;
+        else if (bit == ChatAdminRightsDef.MANAGE_CALL) rights.manageCall = value;
+        else if (bit == ChatAdminRightsDef.MANAGE_TOPICS) rights.manageTopics = value;
+    }
+
+    private void showDefaultPermissions()
+    {
+        if (currentChatInfo == null
+                || !currentChatInfo.capabilities.canEditDefaultPermissions)
+        {
+            return;
+        }
+        ChatDefaultPermissions permissions = currentChatInfo.defaultPermissions;
+        defaultPermissionsForm = new Form("Default permissions");
+        defaultPermissionChoices = new ChoiceGroup("Members may",
+                ChoiceGroup.MULTIPLE);
+        String[] labels = { "Send text", "Send media",
+                "Stickers, GIFs and inline", "Embed links", "Send polls",
+                "Send reactions", "Invite users", "Change info",
+                "Pin messages", "Create topics" };
+        boolean[] selected = { permissions.sendText, permissions.sendMedia,
+                permissions.sendStickers, permissions.embedLinks,
+                permissions.sendPolls, permissions.sendReactions,
+                permissions.inviteUsers, permissions.changeInfo,
+                permissions.pinMessages, permissions.manageTopics };
+        int count = currentChatInfo.type == ChatInfo.FORUM ? labels.length
+                : labels.length - 1;
+        for (int i = 0; i < count; i++)
+        {
+            defaultPermissionChoices.append(labels[i], null);
+            defaultPermissionChoices.setSelectedIndex(i, selected[i]);
+        }
+        defaultPermissionsForm.append(defaultPermissionChoices);
+        defaultPermissionsForm.addCommand(cmdSavePermissions);
+        defaultPermissionsForm.addCommand(cmdBack);
+        defaultPermissionsForm.setCommandListener(this);
+        pushScreen(defaultPermissionsForm);
+    }
+
+    private void saveDefaultPermissions()
+    {
+        if (currentChatInfo == null || defaultPermissionChoices == null) { return; }
+        final ChatDefaultPermissions permissions =
+                currentChatInfo.defaultPermissions.copy();
+        permissions.sendText = defaultPermissionChoices.isSelected(0);
+        permissions.sendMedia = defaultPermissionChoices.isSelected(1);
+        permissions.sendStickers = defaultPermissionChoices.isSelected(2);
+        permissions.embedLinks = defaultPermissionChoices.isSelected(3);
+        permissions.sendPolls = defaultPermissionChoices.isSelected(4);
+        permissions.sendReactions = defaultPermissionChoices.isSelected(5);
+        permissions.inviteUsers = defaultPermissionChoices.isSelected(6);
+        permissions.changeInfo = defaultPermissionChoices.isSelected(7);
+        permissions.pinMessages = defaultPermissionChoices.isSelected(8);
+        if (currentChatInfo.type == ChatInfo.FORUM)
+        {
+            permissions.manageTopics = defaultPermissionChoices.isSelected(9);
+        }
+        final Peer chat = communityPeer;
+        final AsyncScope.Token asked = scope.capture();
+        showBusy("Permissions", "Saving permissions...");
+        boolean submitted = worker.submit(new Worker.Task()
+        {
+            public String name() { return "messages.editChatDefaultBannedRights"; }
+            public Object run() throws Exception
+            {
+                telegram.editDefaultPermissions(chat, permissions);
+                return telegram.getChatInfo(chat);
+            }
+        }, new Worker.Callback()
+        {
+            public void onSuccess(Object result)
+            {
+                if (!asked.sameSession()) { dropStale("default permissions"); return; }
+                currentChatInfo = (ChatInfo) result;
+                rebuildChatInfoScreen();
+                returnTo(chatInfoScreen);
+            }
+            public void onFailure(Throwable error)
+            {
+                if (!asked.sameSession()) { dropStale("default permissions"); return; }
+                showAlertThen("Could not save permissions", error,
+                        defaultPermissionsForm);
+            }
+        });
+        if (!submitted)
+        {
+            showRefused("Permissions not saved", "Try again in a moment.",
+                    defaultPermissionsForm);
+        }
+    }
+
+    private void showInviteUserSearch()
+    {
+        communityInvitePick = true;
+        folderPeerPickMode = 0;
+        showSearchBox(false);
+    }
+
+    private void showInviteLinks()
+    {
+        if (currentChatInfo == null
+                || !currentChatInfo.capabilities.canManageInviteLinks) { return; }
+        exportedInvites = new ExportedInviteLink[0];
+        exportedInviteTotal = 0;
+        exportedInviteExhausted = false;
+        exportedInviteLoading = false;
+        exportedInviteList = buildInviteLinkList();
+        pushScreen(exportedInviteList);
+        loadInviteLinks(true, false);
+    }
+
+    private List buildInviteLinkList()
+    {
+        List list = new List("Invite links", List.IMPLICIT);
+        for (int i = 0; i < exportedInvites.length; i++)
+        {
+            ExportedInviteLink link = exportedInvites[i];
+            String label = link.title == null || link.title.length() == 0
+                    ? link.link : link.title;
+            if (link.requestNeeded) { label += " [approval]"; }
+            list.append(label, null);
+        }
+        if (exportedInvites.length == 0) { list.append("(no active links)", null); }
+        if (exportedInvites.length > 0)
+        {
+            list.addCommand(cmdOpenInviteLink);
+            list.setSelectCommand(cmdOpenInviteLink);
+            list.addCommand(cmdRevokeInviteLink);
+        }
+        list.addCommand(cmdCreateInviteLink);
+        if (!exportedInviteExhausted) { list.addCommand(cmdMoreInviteLinks); }
+        list.addCommand(cmdBack);
+        list.setCommandListener(this);
+        return list;
+    }
+
+    private void loadInviteLinks(final boolean reset, final boolean manual)
+    {
+        if (exportedInviteLoading || communityPeer == null) { return; }
+        if (!reset && exportedInviteExhausted)
+        {
+            if (manual) { showAlert("No more links.", AlertType.INFO,
+                    exportedInviteList); }
+            return;
+        }
+        final Peer chat = communityPeer;
+        final List screen = exportedInviteList;
+        final ExportedInviteLink selected = selectedInviteLink();
+        final ExportedInviteLink offset = reset || exportedInvites.length == 0
+                ? null : exportedInvites[exportedInvites.length - 1];
+        final int limit = MemoryBudget.participantPageSize();
+        final AsyncScope.Token asked = scope.capture();
+        exportedInviteLoading = true;
+        boolean submitted = worker.submit(new Worker.Task()
+        {
+            public String name() { return "messages.getExportedChatInvites"; }
+            public Object run() throws Exception
+            {
+                return telegram.getInviteLinks(chat, offset, limit);
+            }
+        }, new Worker.Callback()
+        {
+            public void onSuccess(Object result)
+            {
+                exportedInviteLoading = false;
+                if (!asked.sameSession() || exportedInviteList != screen
+                        || !samePeer(chat, communityPeer))
+                {
+                    dropStale("messages.getExportedChatInvites");
+                    return;
+                }
+                ExportedInviteLinkPage page = (ExportedInviteLinkPage) result;
+                exportedInviteTotal = page.total;
+                int freshCount = countNewInviteLinks(exportedInvites,
+                        page.links);
+                exportedInviteExhausted = page.exhausted
+                        || (!reset && freshCount == 0);
+                exportedInvites = reset ? page.links
+                        : mergeInviteLinks(exportedInvites, page.links);
+                List fresh = buildInviteLinkList();
+                selectInviteLink(fresh, selected);
+                exportedInviteList = fresh;
+                replaceScreen(fresh);
+            }
+            public void onFailure(Throwable error)
+            {
+                exportedInviteLoading = false;
+                if (!asked.sameSession()) { dropStale("invite links"); return; }
+                showAlertThen("Could not load invite links", error, screen);
+            }
+        });
+        if (!submitted)
+        {
+            exportedInviteLoading = false;
+            if (manual) showRefused("Links not loaded", "Try again in a moment.", screen);
+        }
+    }
+
+    private static ExportedInviteLink[] mergeInviteLinks(
+            ExportedInviteLink[] old, ExportedInviteLink[] page)
+    {
+        int cap = MemoryBudget.maxParticipants();
+        ExportedInviteLink[] tmp = new ExportedInviteLink[
+                old.length + page.length];
+        int count = 0;
+        for (int i = 0; i < old.length; i++) tmp[count++] = old[i];
+        for (int i = 0; i < page.length; i++)
+        {
+            boolean duplicate = false;
+            for (int j = 0; j < count; j++)
+            {
+                if (tmp[j].link.equals(page[i].link)) { duplicate = true; break; }
+            }
+            if (!duplicate) { tmp[count++] = page[i]; }
+        }
+        int kept = Math.min(cap, count);
+        ExportedInviteLink[] exact = new ExportedInviteLink[kept];
+        System.arraycopy(tmp, count - kept, exact, 0, kept);
+        return exact;
+    }
+
+    private static int countNewInviteLinks(ExportedInviteLink[] old,
+            ExportedInviteLink[] page)
+    {
+        int fresh = 0;
+        for (int i = 0; i < page.length; i++)
+        {
+            boolean found = false;
+            for (int j = 0; j < old.length; j++)
+            {
+                if (old[j].link.equals(page[i].link)) { found = true; break; }
+            }
+            if (!found) { fresh++; }
+        }
+        return fresh;
+    }
+
+    private static ExportedInviteLink[] prependInviteLink(
+            ExportedInviteLink value, ExportedInviteLink[] old)
+    {
+        int cap = MemoryBudget.maxParticipants();
+        int length = Math.min(cap, old.length + 1);
+        ExportedInviteLink[] out = new ExportedInviteLink[length];
+        out[0] = value;
+        int count = 1;
+        for (int i = 0; i < old.length && count < length; i++)
+        {
+            if (!value.link.equals(old[i].link)) { out[count++] = old[i]; }
+        }
+        if (count == out.length) { return out; }
+        ExportedInviteLink[] exact = new ExportedInviteLink[count];
+        System.arraycopy(out, 0, exact, 0, count);
+        return exact;
+    }
+
+    private ExportedInviteLink selectedInviteLink()
+    {
+        if (exportedInviteList == null) { return null; }
+        int at = exportedInviteList.getSelectedIndex();
+        return at >= 0 && at < exportedInvites.length ? exportedInvites[at] : null;
+    }
+
+    private void selectInviteLink(List list, ExportedInviteLink selected)
+    {
+        if (list == null || selected == null) { return; }
+        for (int i = 0; i < exportedInvites.length; i++)
+        {
+            if (selected.link.equals(exportedInvites[i].link))
+            {
+                list.setSelectedIndex(i, true);
+                return;
+            }
+        }
+    }
+
+    private void openSelectedInviteLink()
+    {
+        ExportedInviteLink link = selectedInviteLink();
+        if (link == null) { return; }
+        exportedInviteBox = new TextBox(link.title.length() == 0
+                ? "Invite link" : link.title, link.link, 512,
+                TextField.URL | TextField.UNEDITABLE);
+        exportedInviteBox.addCommand(cmdBack);
+        exportedInviteBox.setCommandListener(this);
+        pushScreen(exportedInviteBox);
+    }
+
+    private void showCreateInviteLink()
+    {
+        createInviteForm = new Form("Create invite link");
+        inviteTitleField = new TextField("Title (optional)", "", 32,
+                TextField.ANY);
+        inviteRequestChoice = new ChoiceGroup("Admission", ChoiceGroup.MULTIPLE);
+        inviteRequestChoice.append("Require administrator approval", null);
+        createInviteForm.append(inviteTitleField);
+        createInviteForm.append(inviteRequestChoice);
+        createInviteForm.addCommand(cmdSubmitInviteLink);
+        createInviteForm.addCommand(cmdBack);
+        createInviteForm.setCommandListener(this);
+        pushScreen(createInviteForm);
+    }
+
+    private void submitInviteLink()
+    {
+        final Peer chat = communityPeer;
+        final String title = inviteTitleField.getString().trim();
+        final boolean requested = inviteRequestChoice.isSelected(0);
+        final AsyncScope.Token asked = scope.capture();
+        showBusy("Invite link", "Creating link...");
+        boolean submitted = worker.submit(new Worker.Task()
+        {
+            public String name() { return "messages.exportChatInvite"; }
+            public Object run() throws Exception
+            {
+                return telegram.createInviteLink(chat, title, requested);
+            }
+        }, new Worker.Callback()
+        {
+            public void onSuccess(Object result)
+            {
+                if (!asked.sameSession()) { dropStale("export invite"); return; }
+                ExportedInviteLink created = (ExportedInviteLink) result;
+                exportedInvites = prependInviteLink(created, exportedInvites);
+                exportedInviteList = buildInviteLinkList();
+                returnTo(createInviteForm);
+                if (!navigation.isRoot()) { navigation.pop(); }
+                replaceScreen(exportedInviteList);
+                openSelectedInviteLink();
+            }
+            public void onFailure(Throwable error)
+            {
+                if (!asked.sameSession()) { dropStale("export invite"); return; }
+                showAlertThen("Could not create invite link", error,
+                        createInviteForm);
+            }
+        });
+        if (!submitted) showRefused("Link not created", "Try again in a moment.",
+                createInviteForm);
+    }
+
+    private void confirmRevokeInviteLink()
+    {
+        pendingRevokeInvite = selectedInviteLink();
+        if (pendingRevokeInvite == null) { return; }
+        revokeInviteConfirm = new Form("Revoke link");
+        revokeInviteConfirm.append("Revoke this invite link? Existing copies"
+                + " will stop working.\n\n" + pendingRevokeInvite.link);
+        revokeInviteConfirm.addCommand(cmdConfirmRevokeInviteLink);
+        revokeInviteConfirm.addCommand(cmdBack);
+        revokeInviteConfirm.setCommandListener(this);
+        pushScreen(revokeInviteConfirm);
+    }
+
+    private void revokeInviteLink()
+    {
+        final ExportedInviteLink link = pendingRevokeInvite;
+        final Peer chat = communityPeer;
+        if (link == null) { return; }
+        final AsyncScope.Token asked = scope.capture();
+        showBusy("Revoke link", "Revoking link...");
+        boolean submitted = worker.submit(new Worker.Task()
+        {
+            public String name() { return "messages.editExportedChatInvite"; }
+            public Object run() throws Exception
+            {
+                telegram.revokeInviteLink(chat, link);
+                return null;
+            }
+        }, new Worker.Callback()
+        {
+            public void onSuccess(Object ignored)
+            {
+                if (!asked.sameSession()) { dropStale("revoke invite"); return; }
+                removeInviteLink(link);
+                pendingRevokeInvite = null;
+                exportedInviteList = buildInviteLinkList();
+                returnTo(revokeInviteConfirm);
+                if (!navigation.isRoot()) { navigation.pop(); }
+                replaceScreen(exportedInviteList);
+            }
+            public void onFailure(Throwable error)
+            {
+                if (!asked.sameSession()) { dropStale("revoke invite"); return; }
+                showAlertThen("Could not revoke invite link", error,
+                        revokeInviteConfirm);
+            }
+        });
+        if (!submitted) showRefused("Link not revoked", "Try again in a moment.",
+                revokeInviteConfirm);
+    }
+
+    private void removeInviteLink(ExportedInviteLink value)
+    {
+        ExportedInviteLink[] out = new ExportedInviteLink[
+                Math.max(0, exportedInvites.length - 1)];
+        int count = 0;
+        for (int i = 0; i < exportedInvites.length; i++)
+        {
+            if (exportedInvites[i] != value && count < out.length)
+            {
+                out[count++] = exportedInvites[i];
+            }
+        }
+        exportedInvites = out;
+        if (exportedInviteTotal > 0) { exportedInviteTotal--; }
+    }
+
+    private void showJoinRequests()
+    {
+        if (currentChatInfo == null
+                || !currentChatInfo.capabilities.canManageJoinRequests) { return; }
+        joinRequests = new JoinRequest[0];
+        joinRequestTotal = Math.max(0, currentChatInfo.pendingJoinRequests);
+        joinRequestsExhausted = false;
+        joinRequestsLoading = false;
+        joinRequestList = buildJoinRequestList();
+        pushScreen(joinRequestList);
+        loadJoinRequests(true, false);
+    }
+
+    private List buildJoinRequestList()
+    {
+        List list = new List("Join requests", List.IMPLICIT);
+        for (int i = 0; i < joinRequests.length; i++)
+        {
+            JoinRequest request = joinRequests[i];
+            String name = request.user == null || request.user.title.length() == 0
+                    ? "User " + (request.user == null ? "?"
+                            : String.valueOf(request.user.id))
+                    : request.user.title;
+            if (request.about.length() > 0) { name += " - " + request.about; }
+            if (request.date > 0)
+            {
+                name += " (" + DateTime.date(request.date) + " "
+                        + DateTime.time(request.date) + ")";
+            }
+            list.append(name, null);
+        }
+        if (joinRequests.length == 0) { list.append("(no pending requests)", null); }
+        if (joinRequests.length > 0)
+        {
+            list.addCommand(cmdApproveRequest);
+            list.addCommand(cmdRejectRequest);
+        }
+        if (!joinRequestsExhausted) { list.addCommand(cmdMoreJoinRequests); }
+        list.addCommand(cmdBack);
+        list.setCommandListener(this);
+        return list;
+    }
+
+    private void loadJoinRequests(final boolean reset, final boolean manual)
+    {
+        if (joinRequestsLoading || communityPeer == null) { return; }
+        final Peer chat = communityPeer;
+        final List screen = joinRequestList;
+        final JoinRequest selected = selectedJoinRequest();
+        final JoinRequest offset = reset || joinRequests.length == 0 ? null
+                : joinRequests[joinRequests.length - 1];
+        final int limit = MemoryBudget.participantPageSize();
+        final AsyncScope.Token asked = scope.capture();
+        joinRequestsLoading = true;
+        boolean submitted = worker.submit(new Worker.Task()
+        {
+            public String name() { return "messages.getChatInviteImporters"; }
+            public Object run() throws Exception
+            {
+                return telegram.getJoinRequests(chat, offset, limit);
+            }
+        }, new Worker.Callback()
+        {
+            public void onSuccess(Object result)
+            {
+                joinRequestsLoading = false;
+                if (!asked.sameSession() || joinRequestList != screen
+                        || !samePeer(chat, communityPeer))
+                {
+                    dropStale("join requests"); return;
+                }
+                JoinRequestPage page = (JoinRequestPage) result;
+                joinRequestTotal = page.total;
+                if (currentChatInfo != null
+                        && samePeer(currentChatInfo.peer, chat))
+                {
+                    currentChatInfo.pendingJoinRequests = page.total;
+                    rebuildChatInfoScreen();
+                }
+                int freshCount = countNewJoinRequests(joinRequests,
+                        page.requests);
+                joinRequestsExhausted = page.exhausted
+                        || (!reset && freshCount == 0);
+                joinRequests = reset ? page.requests
+                        : mergeJoinRequests(joinRequests, page.requests);
+                joinRequestList = buildJoinRequestList();
+                selectJoinRequest(joinRequestList, selected);
+                replaceScreen(joinRequestList);
+            }
+            public void onFailure(Throwable error)
+            {
+                joinRequestsLoading = false;
+                if (!asked.sameSession()) { dropStale("join requests"); return; }
+                showAlertThen("Could not load join requests", error, screen);
+            }
+        });
+        if (!submitted)
+        {
+            joinRequestsLoading = false;
+            if (manual) showRefused("Requests not loaded", "Try again in a moment.", screen);
+        }
+    }
+
+    private static JoinRequest[] mergeJoinRequests(JoinRequest[] old,
+            JoinRequest[] page)
+    {
+        int cap = MemoryBudget.maxParticipants();
+        JoinRequest[] tmp = new JoinRequest[old.length + page.length];
+        int count = 0;
+        for (int i = 0; i < old.length; i++) tmp[count++] = old[i];
+        for (int i = 0; i < page.length; i++)
+        {
+            boolean duplicate = false;
+            for (int j = 0; j < count; j++)
+            {
+                if (samePeer(tmp[j].user, page[i].user)) { duplicate = true; break; }
+            }
+            if (!duplicate) tmp[count++] = page[i];
+        }
+        int kept = Math.min(cap, count);
+        JoinRequest[] exact = new JoinRequest[kept];
+        System.arraycopy(tmp, count - kept, exact, 0, kept);
+        return exact;
+    }
+
+    private static int countNewJoinRequests(JoinRequest[] old,
+            JoinRequest[] page)
+    {
+        int fresh = 0;
+        for (int i = 0; i < page.length; i++)
+        {
+            boolean found = false;
+            for (int j = 0; j < old.length; j++)
+            {
+                if (samePeer(old[j].user, page[i].user))
+                {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) { fresh++; }
+        }
+        return fresh;
+    }
+
+    private JoinRequest selectedJoinRequest()
+    {
+        if (joinRequestList == null) { return null; }
+        int at = joinRequestList.getSelectedIndex();
+        return at >= 0 && at < joinRequests.length ? joinRequests[at] : null;
+    }
+
+    private void selectJoinRequest(List list, JoinRequest selected)
+    {
+        if (list == null || selected == null) { return; }
+        for (int i = 0; i < joinRequests.length; i++)
+        {
+            if (samePeer(selected.user, joinRequests[i].user))
+            {
+                list.setSelectedIndex(i, true);
+                return;
+            }
+        }
+    }
+
+    private void decideSelectedJoinRequest(boolean approved)
+    {
+        decideJoinRequest(selectedJoinRequest(), approved);
+    }
+
+    private void confirmRejectJoinRequest()
+    {
+        pendingJoinRequest = selectedJoinRequest();
+        if (pendingJoinRequest == null) { return; }
+        rejectRequestConfirm = new Form("Reject request");
+        rejectRequestConfirm.append("Reject the join request from "
+                + pendingJoinRequest.user.title + "?");
+        rejectRequestConfirm.addCommand(cmdConfirmRejectRequest);
+        rejectRequestConfirm.addCommand(cmdBack);
+        rejectRequestConfirm.setCommandListener(this);
+        pushScreen(rejectRequestConfirm);
+    }
+
+    private void decideJoinRequest(final JoinRequest request,
+            final boolean approved)
+    {
+        if (request == null || request.user == null) { return; }
+        final Peer chat = communityPeer;
+        final Form rejection = approved ? null : rejectRequestConfirm;
+        final AsyncScope.Token asked = scope.capture();
+        showBusy(approved ? "Approve" : "Reject", "Updating request...");
+        boolean submitted = worker.submit(new Worker.Task()
+        {
+            public String name() { return "messages.hideChatJoinRequest"; }
+            public Object run() throws Exception
+            {
+                telegram.decideJoinRequest(chat, request.user, approved);
+                return null;
+            }
+        }, new Worker.Callback()
+        {
+            public void onSuccess(Object ignored)
+            {
+                if (!asked.sameSession()) { dropStale("join request action"); return; }
+                removeJoinRequest(request);
+                pendingJoinRequest = null;
+                if (currentChatInfo != null && currentChatInfo.pendingJoinRequests > 0)
+                {
+                    currentChatInfo.pendingJoinRequests--;
+                }
+                joinRequestList = buildJoinRequestList();
+                if (rejection != null) returnTo(rejection);
+                if (!navigation.isRoot() && navigation.current() == rejection)
+                {
+                    navigation.pop();
+                }
+                rejectRequestConfirm = null;
+                replaceScreen(joinRequestList);
+            }
+            public void onFailure(Throwable error)
+            {
+                if (!asked.sameSession()) { dropStale("join request action"); return; }
+                showAlertThen("Could not update join request", error,
+                        approved ? (Displayable) joinRequestList
+                                : (Displayable) rejection);
+            }
+        });
+        if (!submitted) showRefused("Request not updated", "Try again in a moment.",
+                approved ? (Displayable) joinRequestList
+                        : (Displayable) rejection);
+    }
+
+    private void removeJoinRequest(JoinRequest value)
+    {
+        JoinRequest[] out = new JoinRequest[Math.max(0, joinRequests.length - 1)];
+        int count = 0;
+        for (int i = 0; i < joinRequests.length; i++)
+        {
+            if (joinRequests[i] != value && count < out.length)
+            {
+                out[count++] = joinRequests[i];
+            }
+        }
+        joinRequests = out;
+        if (joinRequestTotal > 0) { joinRequestTotal--; }
+    }
+
+    private void confirmCommunityAction(int action, Peer target)
+    {
+        pendingCommunityAction = action;
+        pendingCommunityTarget = target;
+        String verb = communityActionLabel(action);
+        String subject = target == null ? (communityPeer == null
+                ? "this community" : communityPeer.title)
+                : (target.title.length() == 0 ? "this user" : target.title);
+        communityConfirm = new Form(verb);
+        communityConfirm.append(verb + " " + subject + "?\n\n"
+                + (action == COMMUNITY_BAN
+                        ? "The ban remains until an administrator removes it."
+                        : "Telegram will apply this change immediately."));
+        communityConfirm.addCommand(cmdConfirmCommunityAction);
+        communityConfirm.addCommand(cmdBack);
+        communityConfirm.setCommandListener(this);
+        pushScreen(communityConfirm);
+    }
+
+    private static String communityActionLabel(int action)
+    {
+        switch (action)
+        {
+            case COMMUNITY_INVITE: return "Invite";
+            case COMMUNITY_KICK: return "Kick";
+            case COMMUNITY_BAN: return "Ban";
+            case COMMUNITY_UNBAN: return "Unban";
+            case COMMUNITY_LEAVE: return "Leave";
+            case COMMUNITY_JOIN: return "Join";
+            case COMMUNITY_DEMOTE: return "Demote";
+            default: return "Confirm";
+        }
+    }
+
+    private void performCommunityAction()
+    {
+        final int action = pendingCommunityAction;
+        final Peer chat = communityPeer;
+        final Peer target = pendingCommunityTarget;
+        final ChatParticipant participant = actionParticipant;
+        if (chat == null || action == 0) { return; }
+        showBusy(communityActionLabel(action), "Contacting Telegram...");
+        final AsyncScope.Token asked = scope.capture();
+        boolean submitted = worker.submit(new Worker.Task()
+        {
+            public String name() { return communityTaskName(action); }
+            public Object run() throws Exception
+            {
+                switch (action)
+                {
+                    case COMMUNITY_INVITE: return telegram.inviteUser(chat, target);
+                    case COMMUNITY_KICK: telegram.kickChatUser(chat, target); break;
+                    case COMMUNITY_BAN: telegram.banChatUser(chat, target); break;
+                    case COMMUNITY_UNBAN: telegram.unbanChatUser(chat, target); break;
+                    case COMMUNITY_LEAVE: telegram.leaveChat(chat); break;
+                    case COMMUNITY_JOIN: telegram.joinChat(chat); break;
+                    case COMMUNITY_DEMOTE:
+                        telegram.demoteChatAdmin(chat, participant);
+                        break;
+                    default: throw new IllegalArgumentException("community action");
+                }
+                if (action == COMMUNITY_KICK || action == COMMUNITY_BAN
+                        || action == COMMUNITY_UNBAN
+                        || action == COMMUNITY_DEMOTE)
+                {
+                    return telegram.getChatInfo(chat);
+                }
+                return null;
+            }
+        }, new Worker.Callback()
+        {
+            public void onSuccess(Object result)
+            {
+                if (!asked.sameSession())
+                {
+                    dropStale(communityTaskName(action));
+                    return;
+                }
+                pendingCommunityAction = 0;
+                pendingCommunityTarget = null;
+                communityConfirm = null;
+                if (action == COMMUNITY_LEAVE)
+                {
+                    resetRoot(dialogList);
+                    loadDialogs();
+                    showAlert("You left the community.", AlertType.INFO,
+                            dialogList);
+                    return;
+                }
+                if (action == COMMUNITY_KICK || action == COMMUNITY_BAN
+                        || action == COMMUNITY_UNBAN
+                        || action == COMMUNITY_DEMOTE)
+                {
+                    if (result instanceof ChatInfo)
+                    {
+                        currentChatInfo = (ChatInfo) result;
+                        rebuildChatInfoScreen();
+                    }
+                    returnTo(participantScreen);
+                    loadParticipants(true, true);
+                    return;
+                }
+                returnTo(chatInfoScreen);
+                if (action == COMMUNITY_INVITE)
+                {
+                    InviteResult invitation = (InviteResult) result;
+                    showAlert(invitation.complete() ? "User invited."
+                            : "Telegram could not invite this user because of"
+                                    + " their privacy settings.",
+                            invitation.complete() ? AlertType.INFO
+                                    : AlertType.WARNING, chatInfoScreen);
+                }
+                showChatInfo(chat, true);
+            }
+
+            public void onFailure(Throwable error)
+            {
+                if (!asked.sameSession())
+                {
+                    dropStale(communityTaskName(action));
+                    return;
+                }
+                showAlertThen(communityActionLabel(action) + " failed", error,
+                        communityConfirm == null ? navigation.current()
+                                : communityConfirm);
+            }
+        });
+        if (!submitted)
+        {
+            showRefused(communityActionLabel(action) + " not started",
+                    "Press Confirm again in a moment.", communityConfirm);
+        }
+    }
+
+    private static String communityTaskName(int action)
+    {
+        switch (action)
+        {
+            case COMMUNITY_INVITE: return "channels.inviteToChannel";
+            case COMMUNITY_KICK:
+            case COMMUNITY_BAN:
+            case COMMUNITY_UNBAN: return "channels.editBanned";
+            case COMMUNITY_LEAVE: return "channels.leaveChannel";
+            case COMMUNITY_DEMOTE: return "channels.editAdmin/demote";
+            case COMMUNITY_JOIN: return "channels.joinChannel";
+            default: return "community.action";
+        }
+    }
+
+    private void returnTo(Displayable wanted)
+    {
+        if (wanted == null) { return; }
+        while (!navigation.isRoot() && navigation.current() != wanted)
+        {
+            navigation.pop();
+        }
+        restoreScreen(wanted);
+    }
+
+    private void showInviteLinkBox()
+    {
+        invitePreview = null;
+        inviteLinkBox = new TextBox("Join by invite link", "", 320,
+                TextField.URL);
+        inviteLinkBox.addCommand(cmdCheckInvite);
+        inviteLinkBox.addCommand(cmdBack);
+        inviteLinkBox.setCommandListener(this);
+        pushScreen(inviteLinkBox);
+    }
+
+    private void checkInviteLink()
+    {
+        final String link = inviteLinkBox.getString().trim();
+        showBusy("Invite", "Checking invite link...");
+        final AsyncScope.Token asked = scope.capture();
+        boolean submitted = worker.submit(new Worker.Task()
+        {
+            public String name() { return "messages.checkChatInvite"; }
+            public Object run() throws Exception
+            {
+                return telegram.checkChatInvite(link);
+            }
+        }, new Worker.Callback()
+        {
+            public void onSuccess(Object result)
+            {
+                if (!asked.sameSession())
+                {
+                    dropStale("messages.checkChatInvite");
+                    return;
+                }
+                invitePreview = (InvitePreview) result;
+                rebuildInvitePreview();
+                replaceScreen(invitePreviewScreen);
+            }
+
+            public void onFailure(Throwable error)
+            {
+                if (!asked.sameSession())
+                {
+                    dropStale("messages.checkChatInvite");
+                    return;
+                }
+                showAlertThen("Invite link is not available", error,
+                        inviteLinkBox);
+            }
+        });
+        if (!submitted)
+        {
+            showRefused("Invite not checked", "Press Check again in a moment.",
+                    inviteLinkBox);
+        }
+    }
+
+    private void rebuildInvitePreview()
+    {
+        invitePreviewScreen = new Form(invitePreview.title.length() == 0
+                ? "Invite" : invitePreview.title);
+        if (invitePreview.about.length() > 0)
+        {
+            invitePreviewScreen.append(invitePreview.about + "\n");
+        }
+        if (invitePreview.participantsCount >= 0)
+        {
+            invitePreviewScreen.append("Members: "
+                    + invitePreview.participantsCount + "\n");
+        }
+        if (invitePreview.already)
+        {
+            invitePreviewScreen.append("You already joined this community.");
+            if (invitePreview.peer != null)
+            {
+                invitePreviewScreen.addCommand(cmdOpenInviteChat);
+            }
+        }
+        else
+        {
+            invitePreviewScreen.append(invitePreview.requestNeeded
+                    ? "Telegram will send a join request."
+                    : "Join this community?");
+            invitePreviewScreen.addCommand(cmdImportInvite);
+        }
+        invitePreviewScreen.addCommand(cmdBack);
+        invitePreviewScreen.setCommandListener(this);
+    }
+
+    private void importInviteLink()
+    {
+        final InvitePreview preview = invitePreview;
+        if (preview == null) { return; }
+        showBusy("Join", preview.requestNeeded
+                ? "Sending join request..." : "Joining community...");
+        final AsyncScope.Token asked = scope.capture();
+        boolean submitted = worker.submit(new Worker.Task()
+        {
+            public String name() { return "messages.importChatInvite"; }
+            public Object run() throws Exception
+            {
+                return telegram.joinChatInvite(preview);
+            }
+        }, new Worker.Callback()
+        {
+            public void onSuccess(Object result)
+            {
+                if (!asked.sameSession())
+                {
+                    dropStale("messages.importChatInvite");
+                    return;
+                }
+                Peer joined = (Peer) result;
+                resetRoot(dialogList);
+                loadDialogs();
+                if (preview.requestNeeded)
+                {
+                    showAlert("Join request sent.", AlertType.INFO, dialogList);
+                }
+                else if (joined != null) { showChatInfo(joined, false); }
+                else
+                {
+                    showAlert("Community joined.", AlertType.INFO, dialogList);
+                }
+            }
+
+            public void onFailure(Throwable error)
+            {
+                if (!asked.sameSession())
+                {
+                    dropStale("messages.importChatInvite");
+                    return;
+                }
+                showAlertThen("Could not join", error, invitePreviewScreen);
+            }
+        });
+        if (!submitted)
+        {
+            showRefused("Join not started", "Press Join again in a moment.",
+                    invitePreviewScreen);
+        }
     }
 
     private void showContextProfile()

@@ -1789,6 +1789,626 @@ public final class Telegram
         return trimmed;
     }
 
+    /** Full information and current-account capabilities for a community. */
+    public ChatInfo getChatInfo(Peer peer) throws IOException
+    {
+        requireCommunity(peer);
+        byte[] query = peer.kind == Peer.CHAT
+                ? Requests.getFullChat(peer) : Requests.getFullChannel(peer);
+        TlObj reply = TlParser.parse(new TlReader(invoke(query)));
+        return ChatInfo.from(reply, peer, peers);
+    }
+
+    /**
+     * Basic groups carry their complete (server-bounded to 200) member vector
+     * in messages.getFullChat. The UI owns and drops this snapshot on close.
+     */
+    public ChatParticipant[] getBasicParticipants(Peer chat)
+            throws IOException
+    {
+        if (chat == null || chat.kind != Peer.CHAT)
+        {
+            throw new IOException("basic group is required");
+        }
+        TlObj reply = TlParser.parse(new TlReader(
+                invoke(Requests.getFullChat(chat))));
+        if (reply == null || reply.id != Api.MESSAGES_CHAT_FULL)
+        {
+            throw new IOException("unexpected full chat reply: "
+                    + describe(reply));
+        }
+        peers.absorb(reply.vec(Api.F_MESSAGES_CHAT_FULL__USERS),
+                reply.vec(Api.F_MESSAGES_CHAT_FULL__CHATS));
+        TlObj full = reply.obj(Api.F_MESSAGES_CHAT_FULL__FULL_CHAT);
+        TlObj holder = full == null ? null
+                : full.obj(Api.F_CHAT_FULL__PARTICIPANTS);
+        if (holder == null || holder.id == Api.CHAT_PARTICIPANTS_FORBIDDEN)
+        {
+            return new ChatParticipant[0];
+        }
+        if (holder.id != Api.CHAT_PARTICIPANTS)
+        {
+            throw new IOException("unexpected basic participants reply");
+        }
+        TlObj[] raw = holder.vec(Api.F_CHAT_PARTICIPANTS__PARTICIPANTS);
+        int capacity = Math.min(raw.length, 200);
+        ChatParticipant[] rows = new ChatParticipant[capacity];
+        int count = 0;
+        for (int i = 0; i < raw.length && count < capacity; i++)
+        {
+            ChatParticipant row = ChatParticipant.fromBasic(raw[i], peers);
+            if (row != null) { rows[count++] = row; }
+        }
+        if (count == rows.length) { return rows; }
+        ChatParticipant[] trimmed = new ChatParticipant[count];
+        System.arraycopy(rows, 0, trimmed, 0, count);
+        return trimmed;
+    }
+
+    /** One server page of current or removed channel participants. */
+    public ChatParticipantPage getChannelParticipants(Peer channel, int filter,
+                                                       int offset, int limit)
+            throws IOException
+    {
+        if (channel == null || channel.kind != Peer.CHANNEL)
+        {
+            throw new IOException("channel is required");
+        }
+        if (filter != ChatParticipantPage.MEMBERS
+                && filter != ChatParticipantPage.REMOVED)
+        {
+            throw new IOException("unknown participant filter");
+        }
+        if (offset < 0) { offset = 0; }
+        if (limit < 1) { limit = 1; }
+        if (limit > 100) { limit = 100; }
+        TlObj reply = TlParser.parse(new TlReader(invoke(
+                Requests.getParticipants(channel, filter, offset, limit))));
+        return ChatParticipantPage.from(reply, offset, limit, peers);
+    }
+
+    /** Validate and preview a private invite without joining it. */
+    public InvitePreview checkChatInvite(String link) throws IOException
+    {
+        String hash = InviteLink.hash(link);
+        TlObj reply = TlParser.parse(new TlReader(
+                invoke(Requests.checkChatInvite(hash))));
+        return InvitePreview.from(reply, hash, peers);
+    }
+
+    /** Import a previously checked invite and return a chat carried by Updates. */
+    public Peer joinChatInvite(InvitePreview preview) throws IOException
+    {
+        if (preview == null || preview.hash == null || preview.hash.length() == 0)
+        {
+            throw new IOException("invite was not checked");
+        }
+        if (preview.already) { return preview.peer; }
+        byte[] result;
+        try
+        {
+            result = invoke(Requests.importChatInvite(preview.hash));
+        }
+        catch (RpcError error)
+        {
+            // Telegram reports a successfully submitted request-needed invite
+            // as control flow rather than an Updates value.  Treating it as a
+            // failure leaves a real pending request behind a red error alert.
+            if (preview.requestNeeded && error.isInviteRequestSent())
+            {
+                return null;
+            }
+            throw error;
+        }
+        TlObj parsed = TlParser.parse(new TlReader(result));
+        Peer joined = absorbCommunityFromUpdates(parsed);
+        updates.acceptRpc(result);
+        return joined;
+    }
+
+    /** Invite one addressable user and preserve privacy-related partial result. */
+    public InviteResult inviteUser(Peer chat, Peer user) throws IOException
+    {
+        requireCommunity(chat);
+        requireUserTarget(user);
+        ChatInfo info = getChatInfo(chat);
+        if (!info.capabilities.canInvite)
+        {
+            throw new IOException("inviting users is not allowed");
+        }
+        byte[] result = invoke(chat.kind == Peer.CHAT
+                ? Requests.addChatUser(chat, user)
+                : Requests.inviteToChannel(chat, user));
+        TlObj parsed = TlParser.parse(new TlReader(result));
+        InviteResult invitation = InviteResult.from(parsed);
+        updates.acceptRpc(result);
+        return invitation;
+    }
+
+    /** Remove a member but leave them able to rejoin. */
+    public void kickChatUser(Peer chat, Peer user) throws IOException
+    {
+        requireCommunity(chat);
+        requireUserTarget(user);
+        ChatInfo info = getChatInfo(chat);
+        if (!info.capabilities.canKick)
+        {
+            throw new IOException("removing users is not allowed");
+        }
+        requireEditableParticipant(chat, user, info.creator);
+        if (chat.kind == Peer.CHAT)
+        {
+            updates.acceptRpc(invoke(Requests.deleteChatUser(chat, user)));
+        }
+        else
+        {
+            // Telegram has no separate channel kick method. Removing without
+            // a lasting ban is the documented ban-then-unban sequence.
+            updates.acceptRpc(invoke(Requests.editBanned(chat, user, true)));
+            updates.acceptRpc(invoke(Requests.editBanned(chat, user, false)));
+        }
+    }
+
+    /** Permanently ban a channel/supergroup participant until explicit unban. */
+    public void banChatUser(Peer chat, Peer user) throws IOException
+    {
+        requireChannelCommunity(chat);
+        requireUserTarget(user);
+        ChatInfo info = getChatInfo(chat);
+        if (!info.capabilities.canBan)
+        {
+            throw new IOException("banning users is not allowed");
+        }
+        requireEditableParticipant(chat, user, info.creator);
+        updates.acceptRpc(invoke(Requests.editBanned(chat, user, true)));
+    }
+
+    /** Remove permanent restrictions; this does not add the user back. */
+    public void unbanChatUser(Peer chat, Peer user) throws IOException
+    {
+        requireChannelCommunity(chat);
+        requireUserTarget(user);
+        ChatInfo info = getChatInfo(chat);
+        if (!info.capabilities.canUnban)
+        {
+            throw new IOException("unbanning users is not allowed");
+        }
+        requireEditableParticipant(chat, user, info.creator);
+        updates.acceptRpc(invoke(Requests.editBanned(chat, user, false)));
+    }
+
+    private ChatParticipant requireEditableParticipant(Peer chat, Peer user,
+            boolean currentUserCreator)
+            throws IOException
+    {
+        ChatParticipant found = null;
+        if (chat.kind == Peer.CHAT)
+        {
+            ChatParticipant[] rows = getBasicParticipants(chat);
+            for (int i = 0; i < rows.length; i++)
+            {
+                if (rows[i] != null && samePeer(rows[i].peer, user))
+                {
+                    found = rows[i];
+                    break;
+                }
+            }
+        }
+        else
+        {
+            TlObj reply = TlParser.parse(new TlReader(invoke(
+                    Requests.getParticipant(chat, user))));
+            if (reply == null || reply.id != Api.CHANNELS_CHANNEL_PARTICIPANT)
+            {
+                throw new IOException("unexpected participant reply");
+            }
+            peers.absorb(reply.vec(Api.F_CHANNELS_CHANNEL_PARTICIPANT__USERS),
+                    reply.vec(Api.F_CHANNELS_CHANNEL_PARTICIPANT__CHATS));
+            found = ChatParticipant.fromChannel(reply.obj(
+                    Api.F_CHANNELS_CHANNEL_PARTICIPANT__PARTICIPANT), peers);
+        }
+        if (found == null)
+        {
+            throw new IOException("participant is no longer available");
+        }
+        if (chat.kind == Peer.CHAT && found.role == ChatParticipant.ADMIN
+                && !currentUserCreator)
+        {
+            found.canEdit = false;
+        }
+        if (found.self || found.role == ChatParticipant.CREATOR
+                || !found.canEdit)
+        {
+            throw new IOException("this participant cannot be moderated");
+        }
+        return found;
+    }
+
+    /** Join an addressable public channel/supergroup. */
+    public void joinChat(Peer chat) throws IOException
+    {
+        requireChannelCommunity(chat);
+        ChatInfo info = getChatInfo(chat);
+        if (!info.capabilities.canJoin)
+        {
+            throw new IOException("this community cannot be joined directly");
+        }
+        updates.acceptRpc(invoke(Requests.joinChannel(chat)));
+    }
+
+    /** Leave a community; creators are rejected before a mutating RPC. */
+    public void leaveChat(Peer chat) throws IOException
+    {
+        requireCommunity(chat);
+        ChatInfo info = getChatInfo(chat);
+        if (!info.capabilities.canLeave)
+        {
+            throw new IOException(info.creator
+                    ? "the creator cannot leave this community"
+                    : "leaving this community is not allowed");
+        }
+        byte[] result;
+        if (chat.kind == Peer.CHAT)
+        {
+            Peer self = peers.self();
+            if (self == null) { throw new IOException("self user is unknown"); }
+            result = invoke(Requests.deleteChatUser(chat, self));
+        }
+        else
+        {
+            result = invoke(Requests.leaveChannel(chat));
+        }
+        updates.acceptRpc(result);
+    }
+
+    /** Promote or edit an administrator, retaining hidden channel rights. */
+    public void editChatAdmin(Peer chat, ChatParticipant participant,
+                              ChatAdminRightsDef rights) throws IOException
+    {
+        requireCommunity(chat);
+        if (participant == null || !participant.canEdit)
+        {
+            throw new IOException("this participant cannot be edited");
+        }
+        requireUserTarget(participant.peer);
+        ChatInfo info = getChatInfo(chat);
+        if (!info.capabilities.canPromote)
+        {
+            throw new IOException("editing administrators is not allowed");
+        }
+        if (rights == null)
+        {
+            throw new IOException("administrator rights are required");
+        }
+        ChatParticipant current = requireEditableParticipant(chat,
+                participant.peer, info.creator);
+        if (chat.kind == Peer.CHAT)
+        {
+            requireTrue(invoke(Requests.editBasicChatAdmin(chat,
+                    participant.peer, true)), "messages.editChatAdmin");
+            updates.invalidateParticipants(chat);
+        }
+        else
+        {
+            // UI-hidden story/direct-message/rank-management bits are taken
+            // from the fresh server row, not from the possibly stale screen.
+            rights.rawFlags = (rights.rawFlags & ChatAdminRightsDef.CORE_MASK)
+                    | (current.adminRights.rawFlags
+                            & ~ChatAdminRightsDef.CORE_MASK);
+            if (current.role != ChatParticipant.ADMIN && !rights.hasCoreRights())
+            {
+                throw new IOException("select at least one administrator right");
+            }
+            if (current.role == ChatParticipant.ADMIN && rights.empty())
+            {
+                throw new IOException("use demote to remove every administrator right");
+            }
+            byte[] result = invoke(Requests.editChannelAdmin(chat,
+                    participant.peer, rights, current.rank));
+            updates.acceptRpc(result);
+        }
+    }
+
+    /** Explicit demotion clears every right; creators and self remain protected. */
+    public void demoteChatAdmin(Peer chat, ChatParticipant participant)
+            throws IOException
+    {
+        requireCommunity(chat);
+        if (participant == null || participant.role != ChatParticipant.ADMIN
+                || !participant.canEdit)
+        {
+            throw new IOException("this administrator cannot be demoted");
+        }
+        requireUserTarget(participant.peer);
+        ChatInfo info = getChatInfo(chat);
+        if (!info.capabilities.canPromote)
+        {
+            throw new IOException("editing administrators is not allowed");
+        }
+        ChatParticipant current = requireEditableParticipant(chat,
+                participant.peer, info.creator);
+        if (current.role != ChatParticipant.ADMIN)
+        {
+            throw new IOException("participant is no longer an administrator");
+        }
+        if (chat.kind == Peer.CHAT)
+        {
+            requireTrue(invoke(Requests.editBasicChatAdmin(chat,
+                    participant.peer, false)), "messages.editChatAdmin");
+            updates.invalidateParticipants(chat);
+        }
+        else
+        {
+            updates.acceptRpc(invoke(Requests.editChannelAdmin(chat,
+                    participant.peer, new ChatAdminRightsDef(), "")));
+        }
+    }
+
+    public void editDefaultPermissions(Peer chat,
+            ChatDefaultPermissions permissions) throws IOException
+    {
+        requireCommunity(chat);
+        if (permissions == null) { throw new IOException("permissions required"); }
+        ChatInfo info = getChatInfo(chat);
+        if (!info.capabilities.canEditDefaultPermissions)
+        {
+            throw new IOException("editing default permissions is not allowed");
+        }
+        updates.acceptRpc(invoke(Requests.editDefaultPermissions(chat,
+                permissions)));
+    }
+
+    public ExportedInviteLinkPage getInviteLinks(Peer chat,
+            ExportedInviteLink offset, int limit) throws IOException
+    {
+        requireCommunity(chat);
+        ChatInfo info = getChatInfo(chat);
+        if (!info.capabilities.canManageInviteLinks)
+        {
+            throw new IOException("managing invite links is not allowed");
+        }
+        if (limit < 1) { limit = 1; }
+        if (limit > 100) { limit = 100; }
+        TlObj reply = TlParser.parse(new TlReader(invoke(
+                Requests.getExportedChatInvites(chat, offset, limit))));
+        return ExportedInviteLinkPage.from(reply, limit, peers);
+    }
+
+    public ExportedInviteLink createInviteLink(Peer chat, String title,
+                                                boolean requestNeeded)
+            throws IOException
+    {
+        requireCommunity(chat);
+        ChatInfo info = getChatInfo(chat);
+        if (!info.capabilities.canManageInviteLinks)
+        {
+            throw new IOException("managing invite links is not allowed");
+        }
+        title = title == null ? "" : title.trim();
+        if (title.length() > 32) { throw new IOException("link title is too long"); }
+        TlObj reply = TlParser.parse(new TlReader(invoke(
+                Requests.exportChatInvite(chat, title, requestNeeded))));
+        ExportedInviteLink out = ExportedInviteLink.from(reply);
+        if (out == null) { throw new IOException("unexpected exported invite reply"); }
+        updates.invalidateInvites(chat, false);
+        return out;
+    }
+
+    public void revokeInviteLink(Peer chat, ExportedInviteLink link)
+            throws IOException
+    {
+        requireCommunity(chat);
+        if (link == null || link.link.length() == 0)
+        {
+            throw new IOException("invite link required");
+        }
+        ChatInfo info = getChatInfo(chat);
+        if (!info.capabilities.canManageInviteLinks)
+        {
+            throw new IOException("managing invite links is not allowed");
+        }
+        TlObj reply = TlParser.parse(new TlReader(invoke(
+                Requests.revokeExportedChatInvite(chat, link.link))));
+        if (reply == null || (reply.id != Api.MESSAGES_EXPORTED_CHAT_INVITE
+                && reply.id != Api.MESSAGES_EXPORTED_CHAT_INVITE_REPLACED))
+        {
+            throw new IOException("unexpected revoke invite reply");
+        }
+        updates.invalidateInvites(chat, false);
+    }
+
+    public JoinRequestPage getJoinRequests(Peer chat, JoinRequest offset,
+                                           int limit) throws IOException
+    {
+        requireCommunity(chat);
+        ChatInfo info = getChatInfo(chat);
+        if (!info.capabilities.canManageJoinRequests)
+        {
+            throw new IOException("managing join requests is not allowed");
+        }
+        if (limit < 1) { limit = 1; }
+        if (limit > 100) { limit = 100; }
+        TlObj reply = TlParser.parse(new TlReader(invoke(
+                Requests.getJoinRequests(chat, offset, limit))));
+        return JoinRequestPage.from(reply, limit, peers);
+    }
+
+    public void decideJoinRequest(Peer chat, Peer user, boolean approved)
+            throws IOException
+    {
+        requireCommunity(chat);
+        requireUserTarget(user);
+        ChatInfo info = getChatInfo(chat);
+        if (!info.capabilities.canManageJoinRequests)
+        {
+            throw new IOException("managing join requests is not allowed");
+        }
+        updates.acceptRpc(invoke(Requests.hideJoinRequest(chat, user,
+                approved)));
+    }
+
+    public void createForumTopic(Peer forum, String title) throws IOException
+    {
+        ChatInfo info = requireForumInfo(forum);
+        if (!info.capabilities.canCreateTopics)
+        {
+            throw new IOException("creating topics is not allowed");
+        }
+        title = checkedTopicTitle(title);
+        updates.acceptRpc(invoke(Requests.createForumTopic(forum, title,
+                rng.nextLong())));
+    }
+
+    public void renameForumTopic(Peer forum, int topicId, String title)
+            throws IOException
+    {
+        requireManageTopics(forum, topicId);
+        updates.acceptRpc(invoke(Requests.renameForumTopic(forum, topicId,
+                checkedTopicTitle(title))));
+    }
+
+    public void setForumTopicClosed(Peer forum, int topicId, boolean closed)
+            throws IOException
+    {
+        requireManageTopics(forum, topicId);
+        if (topicId == ForumTopic.GENERAL_ID)
+        {
+            throw new IOException("General cannot be closed");
+        }
+        updates.acceptRpc(invoke(Requests.setForumTopicClosed(forum, topicId,
+                closed)));
+    }
+
+    public void setGeneralTopicHidden(Peer forum, boolean hidden)
+            throws IOException
+    {
+        requireManageTopics(forum, ForumTopic.GENERAL_ID);
+        updates.acceptRpc(invoke(Requests.setGeneralTopicHidden(forum, hidden)));
+    }
+
+    public void setForumTopicPinned(Peer forum, int topicId, boolean pinned)
+            throws IOException
+    {
+        requireManageTopics(forum, topicId);
+        updates.acceptRpc(invoke(Requests.setForumTopicPinned(forum, topicId,
+                pinned)));
+    }
+
+    public void deleteForumTopic(Peer forum, int topicId) throws IOException
+    {
+        requireManageTopics(forum, topicId);
+        if (topicId == ForumTopic.GENERAL_ID)
+        {
+            throw new IOException("General cannot be deleted");
+        }
+        int offset;
+        int rounds = 0;
+        do
+        {
+            byte[] body = invoke(Requests.deleteForumTopic(forum, topicId));
+            TlObj affected = TlParser.parse(new TlReader(body));
+            if (affected == null || affected.id != Api.MESSAGES_AFFECTED_HISTORY)
+            {
+                throw new IOException("unexpected delete topic reply");
+            }
+            offset = affected.intAt(Api.F_MESSAGES_AFFECTED_HISTORY__OFFSET);
+            updates.acceptAffected(body, forum, true);
+            if (++rounds > 100)
+            {
+                throw new IOException("topic history deletion did not converge");
+            }
+        }
+        while (offset > 0);
+    }
+
+    private ChatInfo requireForumInfo(Peer forum) throws IOException
+    {
+        requireChannelCommunity(forum);
+        ChatInfo info = getChatInfo(forum);
+        if (info.type != ChatInfo.FORUM)
+        {
+            throw new IOException("forum is required");
+        }
+        return info;
+    }
+
+    private void requireManageTopics(Peer forum, int topicId) throws IOException
+    {
+        if (topicId <= 0) { throw new IOException("topic is required"); }
+        ChatInfo info = requireForumInfo(forum);
+        if (!info.capabilities.canManageTopics)
+        {
+            throw new IOException("managing topics is not allowed");
+        }
+    }
+
+    private static String checkedTopicTitle(String title) throws IOException
+    {
+        title = title == null ? "" : title.trim();
+        if (title.length() == 0) { throw new IOException("topic title is empty"); }
+        if (title.length() > 128) { throw new IOException("topic title is too long"); }
+        return title;
+    }
+
+    private Peer absorbCommunityFromUpdates(TlObj result)
+    {
+        if (result == null) { return null; }
+        TlObj[] users;
+        TlObj[] chats;
+        if (result.id == Api.UPDATES)
+        {
+            users = result.vec(Api.F_UPDATES__USERS);
+            chats = result.vec(Api.F_UPDATES__CHATS);
+        }
+        else if (result.id == Api.UPDATES_COMBINED)
+        {
+            users = result.vec(Api.F_UPDATES_COMBINED__USERS);
+            chats = result.vec(Api.F_UPDATES_COMBINED__CHATS);
+        }
+        else { return null; }
+        peers.absorb(users, chats);
+        for (int i = 0; i < chats.length; i++)
+        {
+            Peer chat = Peer.fromChat(chats[i]);
+            if (chat != null) { return peers.resolve(chat); }
+        }
+        return null;
+    }
+
+    private static void requireCommunity(Peer peer) throws IOException
+    {
+        if (peer == null || (peer.kind != Peer.CHAT
+                && peer.kind != Peer.CHANNEL))
+        {
+            throw new IOException("community peer is required");
+        }
+    }
+
+    private static boolean samePeer(Peer a, Peer b)
+    {
+        return a != null && b != null && a.kind == b.kind && a.id == b.id;
+    }
+
+    private static void requireChannelCommunity(Peer peer) throws IOException
+    {
+        if (peer == null || peer.kind != Peer.CHANNEL)
+        {
+            throw new IOException("channel or supergroup is required");
+        }
+    }
+
+    private void requireUserTarget(Peer user) throws IOException
+    {
+        if (user == null || user.kind != Peer.USER || user.self)
+        {
+            throw new IOException("another user is required");
+        }
+        if (!peers.isAddressable(user))
+        {
+            throw new IOException("user is not addressable");
+        }
+    }
+
     /** Resolve and cache a public peer from its @username. */
     /**
      * Peers matching {@code query}, contacts first.
@@ -2192,7 +2812,7 @@ public final class Telegram
         else
         {
             byte[] result = invoke(Requests.readHistory(peer, maxId));
-            updates.acceptAffected(result);
+            updates.acceptAffected(result, peer, false);
         }
         Diag.info("marked read up to " + maxId + " in " + peer
                   + (threadRootId > 0 ? (" thread " + threadRootId) : ""));
@@ -2227,7 +2847,7 @@ public final class Telegram
         {
             result = invoke(Requests.deleteMessages(messageId, revoke));
         }
-        updates.acceptAffected(result);
+        updates.acceptAffected(result, peer, false);
     }
 
     public Profile getProfile(Peer user) throws IOException

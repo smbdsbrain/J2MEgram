@@ -119,7 +119,30 @@ public final class SourceGuardTest implements Test
         theOpenThreadHasOneAssignmentPoint(sources);
         historyPrefetchStaysOffTheUserWorker();
         topicPagingStaysOffTheUserWorker();
+        participantPagingStaysOffTheUiThread();
         reactionUiDoesNotWaitOnForegroundWork();
+    }
+
+    /** Community lists page on workers and guard every result by session/chat. */
+    private static void participantPagingStaysOffTheUiThread()
+            throws IOException
+    {
+        String source = read(new File("src/tg/app/TgMidlet.java"));
+        int load = source.indexOf("private void loadParticipants(");
+        int append = source.indexOf("private void appendParticipantPage(", load);
+        Assert.isTrue("participant paging source markers",
+                load >= 0 && append > load);
+        String paging = source.substring(load, append);
+        Assert.isTrue("automatic participant paging uses maintenance worker",
+                paging.indexOf("manual ? worker : syncWorker") >= 0);
+        Assert.isTrue("participant requests never execute on the UI thread",
+                paging.indexOf("pageWorker.submit(") >= 0);
+        Assert.isTrue("participant results are session guarded",
+                paging.indexOf("asked.sameSession()") >= 0
+                && paging.indexOf("samePeer(chat, communityPeer)") >= 0);
+        Assert.isTrue("worker refusal clears the in-flight latch",
+                paging.indexOf("if (!submitted)") >= 0
+                && paging.indexOf("participantPageInFlight = false") >= 0);
     }
 
     /** Opening/inspecting reactions must never create an invisible busy task. */

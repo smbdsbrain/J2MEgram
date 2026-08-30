@@ -16,6 +16,8 @@ import java.io.IOException;
  *   <li>{@code 420 FLOOD_WAIT_X} - wait X seconds. On a legacy client that
  *       reconnects often this is a normal thing to encounter, and the number
  *       matters, so it is parsed out.</li>
+ *   <li>{@code 400 INVITE_REQUEST_SENT} - importing a request-needed invite
+ *       succeeded, but membership is still pending administrator approval.</li>
  *   <li>{@code 401 AUTH_KEY_UNREGISTERED} / {@code SESSION_PASSWORD_NEEDED} -
  *       authorization state, handled by the login flow.</li>
  * </ul>
@@ -75,6 +77,12 @@ public class RpcError extends IOException
     public boolean isFloodWait()
     {
         return floodWaitSeconds() >= 0;
+    }
+
+    /** The request-needed invite was submitted successfully. */
+    public boolean isInviteRequestSent()
+    {
+        return code == 400 && "INVITE_REQUEST_SENT".equals(type);
     }
 
     /** The account has 2FA enabled and auth.checkPassword is required. */

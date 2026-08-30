@@ -279,6 +279,17 @@ public final class FolderTest implements Test
         Assert.isFalse("include removes exclude", f.containsExcluded(p));
         f.setPinned(p, true);
         Assert.isTrue("pinned", f.containsPinned(p));
+        Assert.equal("pin does not synthesize include", 1,
+                f.includePeers.length);
+        f.setIncluded(p, false);
+        Assert.isTrue("uninclude keeps independent pin", f.containsPinned(p));
+        Assert.equal("explicit include removed", 0, f.includePeers.length);
+        Assert.isTrue("pin still includes for matching", f.containsIncluded(p));
+        f.setPinned(p, false);
+        Assert.isFalse("unpin removes only pin", f.containsPinned(p));
+        Assert.equal("unpin leaves no artificial include", 0,
+                f.includePeers.length);
+        f.setPinned(p, true);
         f.setExcluded(p, true);
         Assert.isFalse("exclude removes pin", f.containsPinned(p));
         Assert.isFalse("exclude removes include", f.containsIncluded(p));

@@ -7,6 +7,7 @@ import org.microemu.device.DeviceFactory;
 import org.microemu.device.j2se.J2SEMutableImage;
 
 import tg.api.Dialog;
+import tg.api.ChatParticipant;
 import tg.api.ForumTopic;
 import tg.api.Message;
 import tg.api.Peer;
@@ -16,6 +17,7 @@ import tg.ui.ChatScreen;
 import tg.ui.DialogListScreen;
 import tg.ui.Metrics;
 import tg.ui.PhotoScreen;
+import tg.ui.ParticipantListScreen;
 import tg.ui.PollScreen;
 import tg.ui.ReactionScreen;
 import tg.ui.TextScreen;
@@ -34,6 +36,7 @@ public final class TouchInputTest implements Test
         gestureBoundaries();
         dialogTapLongPressSwipeAndDpad();
         topicTapOpensTouchedTopic();
+        participantTapSwipeAndDpad();
         pickersTapTheirTouchedRow();
         chatTapAndSwipe();
         textSwipeAndPhotoTap();
@@ -63,6 +66,51 @@ public final class TouchInputTest implements Test
         topics.tap(20, secondRow);
         Assert.equal("topic tap focuses its row", 1, topics.selectedIndex());
         Assert.equal("topic tap invokes FIRE open", 20, activated[0]);
+    }
+
+    private static void participantTapSwipeAndDpad()
+    {
+        ChatParticipant[] rows = new ChatParticipant[8];
+        for (int i = 0; i < rows.length; i++)
+        {
+            rows[i] = new ChatParticipant();
+            rows[i].peer = new Peer(Peer.USER, i + 1);
+            rows[i].peer.title = "member " + (i + 1);
+        }
+        ExposedParticipants screen = new ExposedParticipants();
+        screen.setParticipants(rows, 20, 100, null);
+        final long[] activated = new long[1];
+        final int[] viewport = new int[1];
+        screen.setActivationListener(
+                new ParticipantListScreen.ActivationListener()
+        {
+            public void onParticipantActivated(ChatParticipant participant)
+            {
+                activated[0] = participant.peer.id;
+            }
+        });
+        screen.setViewportListener(new ParticipantListScreen.ViewportListener()
+        {
+            public void onParticipantViewportChanged() { viewport[0]++; }
+        });
+        Metrics metrics = metrics();
+        int second = metrics.bodyTop + metrics.rowHeight
+                + metrics.rowHeight / 2;
+        screen.tap(20, second);
+        Assert.equal("participant tap focuses row", 1, screen.selectedIndex());
+        Assert.equal("participant tap activates row", 2L, activated[0]);
+        screen.press(Canvas.KEY_NUM8);
+        screen.press(Canvas.KEY_NUM5);
+        Assert.equal("participant keypad activates row", 3L, activated[0]);
+        int third = metrics.bodyTop + metrics.rowHeight * 2
+                + metrics.rowHeight / 2;
+        screen.pointerDown(20, third);
+        screen.pointerMove(20, third - metrics.rowHeight * 3);
+        screen.pointerUp(20, third - metrics.rowHeight * 3);
+        Assert.isTrue("participant swipe moves viewport", screen.topIndex() > 0);
+        Assert.isTrue("participant movement requests paging", viewport[0] > 0);
+        Assert.equal("participant window offset retained", 20,
+                screen.windowStart());
     }
 
     private static void gestureBoundaries()
@@ -302,6 +350,19 @@ public final class TouchInputTest implements Test
     {
         ExposedTopics() { super(null, new Peer(Peer.CHANNEL, 99)); }
         void tap(int x, int y) { pointerPressed(x, y); pointerReleased(x, y); }
+    }
+
+    private static final class ExposedParticipants extends ParticipantListScreen
+    {
+        ExposedParticipants()
+        {
+            super(null, new Peer(Peer.CHANNEL, 99));
+        }
+        void press(int key) { keyPressed(key); }
+        void tap(int x, int y) { pointerPressed(x, y); pointerReleased(x, y); }
+        void pointerDown(int x, int y) { pointerPressed(x, y); }
+        void pointerMove(int x, int y) { pointerDragged(x, y); }
+        void pointerUp(int x, int y) { pointerReleased(x, y); }
     }
 
     private static final class ExposedReactions extends ReactionScreen

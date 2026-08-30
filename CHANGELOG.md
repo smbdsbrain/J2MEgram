@@ -1,5 +1,60 @@
 # Changelog
 
+## 1.6.0
+
+### Added
+
+- Bounded community administration: capability-driven chat info, participant
+  paging, invitations, kick/ban/unban, join/leave, promote/demote, granular
+  administrator rights and default group permissions.
+- Invite-link and join-request management, including request-needed links,
+  paged pending requests and single-user approve/reject flows.
+- Forum topic administration: create, rename, close/reopen, pin/unpin,
+  General-topic visibility and confirmed non-General history deletion.
+- An account/environment-bound RMS dialog index with versioned CRC records,
+  atomic replacement, bounded streaming queries, eviction and partial/exact
+  generation tracking for offline custom folders.
+- A reversible live community E2E harness covering the normal and minified
+  packaged MIDlets while preserving the selected fixture's original state.
+
+### Changed
+
+- Custom folders now apply Telegram's include/exclude/pinned precedence,
+  preserve explicit pin ordering, keep pin membership independent from
+  explicit includes, and treat shared folders as explicit read-only lists.
+- Dialog, participant, invite and topic invalidations are reconciled through
+  the ordered update path, with dirty-index recovery when a live update cannot
+  be represented exactly.
+- Personal folders support create, edit, delete and reorder while cached
+  offline folders remain read-only.
+
+### Fixed
+
+- `400 INVITE_REQUEST_SENT` is handled as successful request-needed invite
+  submission instead of leaving a real pending request behind an error alert.
+
+### Testing
+
+- 68 desktop Java suites and 64 tooling tests cover wire shapes, rights
+  round-trips, capability matrices, folder semantics, RMS corruption and
+  bounded UI behaviour.
+- Normal and minified production JARs passed CLDC/MIDP audits, 32 MiB packaged
+  smoke and a reversible MicroEmulator community flow against a private forum.
+  No new physical-device validation is claimed for these features.
+
+## 1.5.0
+
+### Added
+
+- Personal dialog folders, explicit include/exclude/pinned peers, folder
+  ordering, dialog pinning and main/archive management.
+- Exact packaged normal/minified folder E2E with reversible server mutations.
+
+### Changed
+
+- Dialog paging and update reconciliation retain folder identity and pinned
+  state across live refreshes and cached rows.
+
 ## 1.4.1
 
 ### Added

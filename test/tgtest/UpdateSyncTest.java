@@ -158,6 +158,8 @@ public final class UpdateSyncTest implements Test
                 capture.lastMessage.entities.length);
         Assert.equal("short update spoiler type", tg.api.MessageEntity.SPOILER,
                 capture.lastMessage.entities[0].type);
+        Assert.equal("short update targets dialog index", 200L,
+                capture.last.dialogPeers[0].id);
         Assert.equal("exact pts", 11, waitPts(sync, 11));
 
         sync.accept(shortMessage(1, 200, "duplicate", 11, 1, 21));
@@ -318,6 +320,25 @@ public final class UpdateSyncTest implements Test
         sync.accept(folderPeersUpdate(200, 1, 11, 1));
         capture.waitDialogLists(1);
         Assert.equal("folder update advances pts", 11, waitPts(sync, 11));
+        Assert.isTrue("archive update dirties dialog index",
+                capture.last.dialogIndexDirty);
+
+        Peer forum = new Peer(Peer.CHANNEL, 300);
+        forum.accessHash = 44;
+        sync.acceptAffected(affectedHistory(12, 1, 0), forum, true);
+        capture.waitTopics(1);
+        Assert.equal("affectedHistory advances pts", 12, waitPts(sync, 12));
+        Assert.equal("affectedHistory points at forum", 300L,
+                capture.last.topicPeers[0].id);
+
+        sync.accept(pendingJoinRequests(300, 4));
+        capture.waitInvites(1);
+        Assert.isTrue("pending request signal updates chat info",
+                capture.last.chatInfoChanged);
+        Assert.isFalse("pending request does not invalidate active links",
+                capture.last.inviteLinksChanged);
+        Assert.equal("pending request points at forum", 300L,
+                capture.last.invitePeers[0].id);
 
         TlWriter filter = new TlWriter(8);
         filter.writeInt(Api.UPDATE_DIALOG_FILTERS);
@@ -773,6 +794,8 @@ public final class UpdateSyncTest implements Test
         volatile int fullRefreshCount;
         volatile int dialogListCount;
         volatile int folderDefinitionCount;
+        volatile int inviteCount;
+        volatile int topicCount;
 
         public synchronized void onBatch(UpdateBatch batch)
         {
@@ -785,6 +808,8 @@ public final class UpdateSyncTest implements Test
             if (batch.fullRefresh) { fullRefreshCount++; }
             if (batch.dialogListsChanged) { dialogListCount++; }
             if (batch.folderDefinitionsChanged) { folderDefinitionCount++; }
+            if (batch.joinRequestsChanged) { inviteCount++; }
+            if (batch.forumTopicsChanged) { topicCount++; }
             if (batch.messages.length > 0)
             {
                 lastMessage = batch.messages[batch.messages.length - 1];
@@ -876,6 +901,26 @@ public final class UpdateSyncTest implements Test
             Assert.equal("folder-definition signal", expected,
                     folderDefinitionCount);
         }
+
+        synchronized void waitInvites(int expected) throws Exception
+        {
+            long until = System.currentTimeMillis() + 3000;
+            while (inviteCount < expected && System.currentTimeMillis() < until)
+            {
+                wait(20);
+            }
+            Assert.equal("invite invalidation signal", expected, inviteCount);
+        }
+
+        synchronized void waitTopics(int expected) throws Exception
+        {
+            long until = System.currentTimeMillis() + 3000;
+            while (topicCount < expected && System.currentTimeMillis() < until)
+            {
+                wait(20);
+            }
+            Assert.equal("topic invalidation signal", expected, topicCount);
+        }
     }
 
     private static byte[] folderPeersUpdate(long userId, int folderId,
@@ -890,6 +935,27 @@ public final class UpdateSyncTest implements Test
         w.writeInt(folderId);
         w.writeInt(pts);
         w.writeInt(count);
+        return w.toByteArray();
+    }
+
+    private static byte[] affectedHistory(int pts, int count, int offset)
+    {
+        TlWriter w = new TlWriter(20);
+        w.writeInt(Api.MESSAGES_AFFECTED_HISTORY);
+        w.writeInt(pts);
+        w.writeInt(count);
+        w.writeInt(offset);
+        return w.toByteArray();
+    }
+
+    private static byte[] pendingJoinRequests(long channelId, int count)
+    {
+        TlWriter w = new TlWriter(40);
+        w.writeInt(Api.UPDATE_PENDING_JOIN_REQUESTS);
+        w.writeInt(Api.PEER_CHANNEL);
+        w.writeLong(channelId);
+        w.writeInt(count);
+        w.writeVectorHeader(0);
         return w.toByteArray();
     }
 

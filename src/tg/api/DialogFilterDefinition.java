@@ -82,7 +82,6 @@ public final class DialogFilterDefinition
         pinnedPeers = setMembership(pinnedPeers, peer, pinned);
         if (pinned)
         {
-            includePeers = setMembership(includePeers, peer, true);
             excludePeers = setMembership(excludePeers, peer, false);
         }
     }
@@ -91,7 +90,6 @@ public final class DialogFilterDefinition
     {
         includePeers = setMembership(includePeers, peer, included);
         if (included) { excludePeers = setMembership(excludePeers, peer, false); }
-        else { pinnedPeers = setMembership(pinnedPeers, peer, false); }
     }
 
     public void setExcluded(Peer peer, boolean excluded)

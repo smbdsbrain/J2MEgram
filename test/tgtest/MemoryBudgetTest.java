@@ -33,6 +33,7 @@ public final class MemoryBudgetTest implements Test
         "maxDialogs", "dialogPageSize", "maxHistory", "historyPageSize",
         "layoutWindowScreens", "historyPrefetchMargin", "dialogPrefetchMargin",
         "maxTopics", "topicPageSize", "topicPrefetchMargin",
+        "maxParticipants", "participantPageSize", "participantPrefetchMargin",
         "peerCacheEntries", "avatarCacheEntries", "thumbnailCacheEntries",
         "screenStackDepth", "photoPixels"
     };
@@ -52,6 +53,7 @@ public final class MemoryBudgetTest implements Test
         120, 40, 120, 30,
         3, 15, 20,
         60, 20, 8,
+        60, 20, 8,
         500, 16, 12,
         16, 307200
     };
@@ -61,6 +63,7 @@ public final class MemoryBudgetTest implements Test
         256 * 1024, 192 * 1024, 48 * 1024, 32 * 1024, 64 * 1024,
         40, 10, 20, 10,
         1, 5, 5,
+        20, 10, 4,
         20, 10, 4,
         64, 2, 2,
         5, 16384
@@ -247,7 +250,7 @@ public final class MemoryBudgetTest implements Test
                     actual[i] <= cap);
         }
         Assert.isTrue("the pixel budget is bounded by the largest block",
-                MemoryBudget.photoPixels() <= Math.max(FLOOR[15], (128 * 1024) / 8));
+                MemoryBudget.photoPixels() <= Math.max(FLOOR[18], (128 * 1024) / 8));
 
         // The floor still wins over the block cap. A device whose largest block
         // cannot hold the smallest legal packet is not one we can rescue by
@@ -315,7 +318,7 @@ public final class MemoryBudgetTest implements Test
     private static void reportingSurvivesEveryState()
     {
         MemoryBudget.reset();
-        Assert.equal("the unmeasured report has every line", 9,
+        Assert.equal("the unmeasured report has every line", 10,
                 MemoryBudget.lines().length);
         Assert.equal("default provenance is named", "default",
                 MemoryBudget.sourceName(MemoryBudget.SOURCE_DEFAULT));
@@ -634,6 +637,9 @@ public final class MemoryBudgetTest implements Test
             MemoryBudget.maxTopics(),
             MemoryBudget.topicPageSize(),
             MemoryBudget.topicPrefetchMargin(),
+            MemoryBudget.maxParticipants(),
+            MemoryBudget.participantPageSize(),
+            MemoryBudget.participantPrefetchMargin(),
             MemoryBudget.peerCacheEntries(),
             MemoryBudget.avatarCacheEntries(),
             MemoryBudget.thumbnailCacheEntries(),
