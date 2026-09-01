@@ -2,6 +2,8 @@
 
 | Page | What is in it |
 |---|---|
+| [features.md](features.md) | Detailed user-visible capabilities, current limitations, and security boundaries |
+| [compatibility.md](compatibility.md) | Requirements, physical-device evidence, per-phone caveats, and the optional Probe download |
 | [building.md](building.md) | Prerequisites on Windows, Linux and macOS; bootstrap, build, test, credentials, live testing, and the rules for writing a cross-platform build script |
 | [installing.md](installing.md) | Normal/minified files, upgrading from TelegramJ2ME, and handset preparation |
 | [architecture.md](architecture.md) | The `Transport` / `MtLink` seam, package map, build targets, how the crypto is verified, memory and threading discipline, durable state, and an honest statement of the security posture |
@@ -14,5 +16,6 @@
 | [testing/1.0-failure-matrix.md](testing/1.0-failure-matrix.md) | Scenario IDs, tier-specific evidence, and explicit `NOT RUN` rows |
 | [screenshots/](screenshots/) | How the README screenshots are rendered, and why every name in them is fictional |
 
-Start with [building.md](building.md) if you want to compile it, and
-[architecture.md](architecture.md) if you want to understand it.
+Start with [installing.md](installing.md) to put a release on a phone,
+[building.md](building.md) to compile it, or [architecture.md](architecture.md)
+to understand the implementation.

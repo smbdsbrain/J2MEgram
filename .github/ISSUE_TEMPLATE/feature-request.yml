@@ -1,0 +1,47 @@
+name: Feature request
+description: Suggest a user-visible improvement for J2MEgram
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Java ME devices have tight limits, so the most useful requests explain
+        the user problem and the phones that would benefit.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: What are you unable to do today, and why does it matter?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed experience
+      description: Describe what the user should be able to do. A technical design is optional.
+    validations:
+      required: true
+
+  - type: input
+    id: handset
+    attributes:
+      label: Target handset or runtime
+      description: Include a model or emulator when the request depends on hardware capability.
+      placeholder: e.g. Nokia C3-00, MIDP 2.1
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives or workarounds
+      description: What do you do today, if anything?
+
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Public-data check
+      options:
+        - label: I have not included a phone number, api_id, api_hash or auth_key.
+          required: true

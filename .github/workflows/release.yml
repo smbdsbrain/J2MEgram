@@ -161,9 +161,10 @@ jobs:
           files: dist/**/*
           generate_release_notes: true
           body: |
-            J2MEgram ${{ github.ref_name }} — Telegram over MTProto 2.0, directly on a Java ME phone.
+            J2MEgram ${{ github.ref_name }} is an experimental, unofficial Telegram
+            client that connects directly from a Java ME phone.
 
-            ### Install
+            ## Download and install
 
             Download **both** files of one variant into the **same folder**, copy that
             folder to the phone (USB, Bluetooth or memory card), then open the `.jad`
@@ -172,8 +173,8 @@ jobs:
 
             | Variant | Use |
             |---|---|
-            | `J2MEgram-*.jar` + `.jad` | Start here. Crash reports name real classes, which is useful while the client is this young. |
-            | `J2MEgram-*-min.jar` + `.jad` | Optimised and obfuscated — noticeably smaller. Try it if your phone rejects the normal build as too large. |
+            | `J2MEgram-*.jar` + matching `.jad` | **Start here.** Crash reports retain readable names. |
+            | `J2MEgram-*-min.jar` + matching `.jad` | Same features, but optimised and obfuscated for smaller JAR limits. |
 
             The `.jad` records the exact byte size of its `.jar`, so do not rename
             either file and do not mix files from different variants or releases.
@@ -183,25 +184,12 @@ jobs:
 
             Verify downloads against `SHA256SUMS.txt`.
 
-            > **This has run on four physical handsets** — an Alcatel OT-810D, a
-            > Samsung GT-C3592, a Nokia C3-00 and a Nokia E6-00 — where signing in,
-            > the dialog list and sending a message all work. Four devices on a
-            > handful of networks prove nothing about yours: compatibility,
-            > performance and permission behaviour elsewhere are still unknown, so
-            > reports are genuinely useful — especially your handset model and what
-            > `J2MEgram Probe` shows.
-            > Per-device measurements are written up under `docs/hardware/`.
-            >
-            > If the direct routes are refused with `Target port denied to untrusted
-            > applications`, that is the handset's policy for unsigned MIDlets on ports
-            > 80 and 443, not a bug. Other ports may still be allowed, so configuring an
-            > MTProxy in Settings before the first connection attempt is worth trying.
-            >
-            > **Set the phone's clock before connecting through an MTProxy.** A FakeTLS
-            > proxy secret embeds the client's time in its handshake, so a wrong clock
-            > is refused by the proxy and surfaces as an opaque TLS alert. One of the
-            > four handsets resets its clock to 2011 on every power cycle, which is
-            > how this was found.
+            Read the current [device compatibility matrix](https://github.com/smbdsbrain/J2MEgram/blob/main/docs/compatibility.md)
+            before installing. If direct sockets are refused, an MTProxy on an allowed
+            high port may work. Set the phone's date, time and time-zone offset before
+            using FakeTLS.
 
-            J2MEgram is an independent project. It is not affiliated with or
-            endorsed by Telegram, and it is not a security-audited everyday client.
+            > [!IMPORTANT]
+            > J2MEgram is experimental and has not received a security audit. It is
+            > independent, not affiliated with or endorsed by Telegram, and should not
+            > be treated as a security-audited everyday client.

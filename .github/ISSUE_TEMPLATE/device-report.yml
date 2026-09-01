@@ -7,15 +7,16 @@ body:
     attributes:
       value: |
         Thank you — this is the single most useful thing anyone can contribute.
-        Exactly one physical handset has ever run this client, so every other
-        device is unknown territory.
+        Physical-device evidence exists for five handsets, but Java ME runtimes,
+        firmware and network policies vary widely. Your exact device is still
+        useful evidence.
 
         **A report where everything worked is just as valuable as one where it
         did not.**
 
-        If you have not already, install `J2MEgram Probe` first. It is about
-        91 KB, installs in seconds, and its screens answer most of the questions
-        below.
+        `J2MEgram Probe` is optional. The separate Probe 1.4.0 JAR is about
+        175 KB and its screens answer many of the questions below, but it is not
+        included in current releases and a report without Probe output is welcome.
 
         ⚠️ **Never paste your phone number, `api_id`, `api_hash` or an
         `auth_key` here.** This is a public issue tracker.

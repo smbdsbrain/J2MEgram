@@ -97,7 +97,7 @@ can run at several layers, each answering a different question:
 | the desktop harness (`tools/test.sh` / `.ps1`) | is the algorithm right |
 | the shipped `dist/probe.jar` on a desktop JVM | did ProGuard's shrink and preverify change behaviour |
 | MicroEmulator | does it survive a MIDP runtime |
-| a physical device | does it survive a vendor VM and AMS - measured on four handsets, with evidence bounded per device |
+| a physical device | does it survive a vendor VM and AMS — see the bounded evidence in the [compatibility matrix](compatibility.md) |
 
 A failure at a later stage that passed an earlier one localises the bug to the
 toolchain rather than the mathematics - which is worth a great deal when the
@@ -534,8 +534,8 @@ no longer spins on `worker.isBusy()` at all: it tries the submission, and a
 refusal — an ordinary outcome, because the user can act at any moment —
 schedules one wake to try again, backing off 250 ms → 4 s.
 
-CLDC has no monotonic clock, and one of the four handsets resets its clock to
-2011 on every power cycle. A backward jump would turn a two-second wait into a
+CLDC has no monotonic clock, and the Nokia C3-00 resets its clock to 2011 on
+every power cycle. A backward jump would turn a two-second wait into a
 fourteen-year one, so a single `wait` is capped at 30 s and the deadline re-read
 afterwards.
 

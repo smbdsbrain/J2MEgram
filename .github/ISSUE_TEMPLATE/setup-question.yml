@@ -1,0 +1,59 @@
+name: Setup question
+description: Ask for help choosing, installing or connecting a build
+title: "[question] "
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use the device report instead if you can already describe a repeatable
+        failure. Never post your phone number, api_id, api_hash or auth_key.
+
+  - type: input
+    id: handset
+    attributes:
+      label: Handset
+      description: Make, model and firmware version when available.
+      placeholder: e.g. Nokia E6-00, firmware 111.140.0058
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: J2MEgram version
+      placeholder: e.g. 1.6.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: stage
+    attributes:
+      label: Where are you stuck?
+      options:
+        - Choosing a download
+        - Copying files to the phone
+        - Installing the JAR/JAD pair
+        - Granting network access
+        - Connecting directly
+        - Configuring an MTProxy
+        - Signing in
+        - Something else
+    validations:
+      required: true
+
+  - type: textarea
+    id: details
+    attributes:
+      label: What have you tried?
+      description: Include exact installer or Diagnostics text when it is safe to publish.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Public-data check
+      options:
+        - label: I have removed phone numbers, api_id, api_hash and auth_key values.
+          required: true
