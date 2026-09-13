@@ -93,6 +93,7 @@ These phones have supplied physical-device evidence:
 | Samsung GT-C3592 | Production sign-in and session resume through MTProxy; exposed JPEG and second-socket limitations. |
 | Nokia C3-00 | Working chats and session recovery in a 2 MB heap; upgrade and interaction paths exercised. |
 | Nokia 5800 XpressMusic | 2FA sign-in, chats, reactions, photos and touch-only navigation work; live updates do not resume after later launches. |
+| Nokia E51 | 2FA sign-in, live updates, sending, reactions and photos work; slow selection changes expose an `IOException` window. |
 | Nokia E6-00 | Production login, chats, sends, reactions and media through FakeTLS MTProxy. |
 | Fly E190 Wi-Fi | Stored-session resume, dialogs and an avatar through FakeTLS; chat history and sending are not yet recorded. |
 
